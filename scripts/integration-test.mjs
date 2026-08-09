@@ -59,6 +59,13 @@ try {
   assert.equal(reviewAppResponse.status, 200);
   const reviewApp = await reviewAppResponse.text();
   assert.match(reviewApp, /segment\.style\?\.font_scale/);
+  assert.match(reviewApp, /caption\.layout_font_scale/);
+  assert.match(reviewApp, /overlay\.style\.bottom/);
+  const captionInteractionSource = reviewApp.match(
+    /function updateCaptionInteraction[\s\S]*?function resumeCaptionPlayback/,
+  )?.[0] || "";
+  assert.match(captionInteractionSource, /width: clamp\(start\.width \+ deltaX, 0\.65/);
+  assert.doesNotMatch(captionInteractionSource, /height: clamp\(start\.height/);
   assert.match(reviewApp, /segment\.style\?\.color/);
   assert.match(reviewApp, /previewSelectionRange\(range\)/);
   assert.match(reviewApp, /renderStructuredOverlay\(currentStructuredOverlayAt\(time\)\)/);
@@ -74,7 +81,7 @@ try {
   const state = await stateResponse.json();
   assert.ok(state.words.length > 0);
   assert.ok(state.effects.length > 0);
-  assert.equal(state.renderEngineVersion, 8);
+  assert.equal(state.renderEngineVersion, 9);
   assert.ok(Array.isArray(state.playbackEffects));
   assert.ok(state.playbackEffects.length <= state.effects.length);
   assert.ok(Array.isArray(state.playbackCaptions));

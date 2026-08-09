@@ -34,7 +34,7 @@ let playbackEffects = [];
 let playbackCaptions = [];
 let playbackOverlays = [];
 let renderEngineCompatible = false;
-const requiredRenderEngineVersion = 8;
+const requiredRenderEngineVersion = 9;
 const selectedWords = new Set();
 let dragging = false;
 let paintShouldSelect = true;
@@ -698,8 +698,7 @@ function updateCaptionInteraction(event) {
   if (interaction.mode === "resize") {
     next = {
       ...start,
-      width: clamp(start.width + deltaX, 0.05, 1 - start.x),
-      height: clamp(start.height + deltaY, 0.05, 1 - start.y),
+      width: clamp(start.width + deltaX, 0.65, 1 - start.x),
     };
   } else {
     next = {
@@ -1041,13 +1040,15 @@ function renderSubtitleOverlay(caption) {
   const frameWidth = elements.videoStage.clientWidth;
   const frameHeight = elements.videoStage.clientHeight;
   const minDimension = Math.min(frameWidth, frameHeight);
-  const fontSize = Math.max(12, minDimension * style.font_size_ratio);
+  const layoutFontScale = Number(caption.layout_font_scale) || 1;
+  const fontSize = Math.max(12, minDimension * style.font_size_ratio) * layoutFontScale;
   const strokeWidth = Math.max(1, minDimension * style.stroke_width_ratio);
   overlay.style.display = "flex";
   overlay.style.left = `${box.x * 100}%`;
-  overlay.style.top = `${box.y * 100}%`;
+  overlay.style.top = "auto";
+  overlay.style.bottom = `${(1 - box.y - box.height) * 100}%`;
   overlay.style.width = `${box.width * 100}%`;
-  overlay.style.height = `${box.height * 100}%`;
+  overlay.style.height = "auto";
   overlay.style.fontFamily = `"${style.font_family}", "Microsoft YaHei", sans-serif`;
   overlay.style.fontSize = `${fontSize}px`;
   overlay.style.color = style.color;

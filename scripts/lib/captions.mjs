@@ -672,14 +672,6 @@ function styleKey(style) {
   return style?.effect_type || "plain";
 }
 
-function trimLineItems(items) {
-  let start = 0;
-  let end = items.length;
-  while (start < end && /^\s$/u.test(items[start].character)) start += 1;
-  while (end > start && /^\s$/u.test(items[end - 1].character)) end -= 1;
-  return items.slice(start, end);
-}
-
 function mergeStyledItems(items) {
   const segments = [];
   for (const item of items) {
@@ -720,7 +712,148 @@ function tokenizedStyledItems(items) {
   return tokens;
 }
 
-function styledCaptionLines(cue, words, captionEffects, maxChars) {
+function captionGlyphWidth(character) {
+  if (/^\s$/u.test(character)) return 0.33;
+  if (/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u.test(character)) return 1;
+  if (/^[MW@#%&]$/.test(character)) return 0.9;
+  if (/^[A-Z]$/.test(character)) return 0.68;
+  if (/^[mw]$/.test(character)) return 0.82;
+  if (/^[ilI1|]$/.test(character)) return 0.3;
+  if (/^[a-z]$/.test(character)) return 0.54;
+  if (/^[0-9]$/.test(character)) return 0.58;
+  if (/^[,.;:!?，。！？；：'"`·]$/u.test(character)) return 0.42;
+  if (/^[()\[\]{}<>《》【】（）]$/u.test(character)) return 0.55;
+  return 0.9;
+}
+
+function styledItemWidth(item) {
+  return captionGlyphWidth(item.character) * (item.style?.font_scale || 1);
+}
+
+function layoutTokenWidth(token) {
+  return token.reduce((total, item) => total + styledItemWidth(item), 0);
+}
+
+function tokenText(token) {
+  return token.map((item) => item.character).join("");
+}
+
+function whitespaceToken(token) {
+  return token.every((item) => /^\s$/u.test(item.character));
+}
+
+function trimLayoutTokens(tokens) {
+  let start = 0;
+  let end = tokens.length;
+  while (start < end && whitespaceToken(tokens[start])) start += 1;
+  while (end > start && whitespaceToken(tokens[end - 1])) end -= 1;
+  return tokens.slice(start, end);
+}
+
+function normalizedLayoutTokens(items) {
+  const rawTokens = tokenizedStyledItems(items);
+  const output = [];
+  for (let index = 0; index < rawTokens.length; index += 1) {
+    const token = rawTokens[index];
+    if (token.length === 1 && token[0].character === "\n") {
+      const previous = output.at(-1);
+      const next = rawTokens.slice(index + 1).find((candidate) => (
+        !(candidate.length === 1 && candidate[0].character === "\n")
+        && !whitespaceToken(candidate)
+      ));
+      if (previous && next && /[A-Za-z0-9]$/.test(tokenText(previous)) && /^[A-Za-z0-9]/.test(tokenText(next))) {
+        output.push([{ character: " ", style: token[0].style || null }]);
+      }
+      continue;
+    }
+    if (whitespaceToken(token)) {
+      if (!output.length || whitespaceToken(output.at(-1))) continue;
+      output.push([{ character: " ", style: token[0].style || null }]);
+      continue;
+    }
+    output.push(token);
+  }
+  return trimLayoutTokens(output);
+}
+
+function tokensWidth(tokens) {
+  return trimLayoutTokens(tokens).reduce((total, token) => total + layoutTokenWidth(token), 0);
+}
+
+function visibleTokenCount(tokens) {
+  return trimLayoutTokens(tokens).filter((token) => !whitespaceToken(token)).length;
+}
+
+function orphanPenalty(tokens) {
+  const visible = trimLayoutTokens(tokens).filter((token) => !whitespaceToken(token));
+  if (visible.length !== 1) return 0;
+  const text = tokenText(visible[0]);
+  return /^[A-Za-z0-9+._-]{1,10}$/.test(text) ? 4 : 1.5;
+}
+
+function boundaryPenalty(tokens, index, left, right) {
+  const leftText = tokenText(trimLayoutTokens(left).at(-1) || []);
+  const rightText = tokenText(trimLayoutTokens(right)[0] || []);
+  let penalty = 0;
+  if (/^[,.;:!?，。！？；：、）》】）]/u.test(rightText)) penalty += 4;
+  if (/[（《【(\[]$/u.test(leftText)) penalty += 4;
+  if (/[，。！？；：、,.;:!?]$/u.test(leftText)) penalty -= 0.6;
+  if (whitespaceToken(tokens[index - 1]) || whitespaceToken(tokens[index])) penalty -= 0.35;
+  return penalty;
+}
+
+function mergedLineFromTokens(tokens) {
+  return mergeStyledItems(trimLayoutTokens(tokens).flat());
+}
+
+function bestTwoLineLayout(tokens, maxWidth) {
+  const candidates = [];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const left = trimLayoutTokens(tokens.slice(0, index));
+    const right = trimLayoutTokens(tokens.slice(index));
+    if (!visibleTokenCount(left) || !visibleTokenCount(right)) continue;
+    const leftWidth = tokensWidth(left);
+    const rightWidth = tokensWidth(right);
+    const overflow = Math.max(0, leftWidth - maxWidth) + Math.max(0, rightWidth - maxWidth);
+    const score = overflow * 1000
+      + (orphanPenalty(left) + orphanPenalty(right)) * 100
+      + boundaryPenalty(tokens, index, left, right) * 50
+      + Math.max(leftWidth, rightWidth) * 2
+      + Math.abs(leftWidth - rightWidth);
+    candidates.push({ left, right, leftWidth, rightWidth, overflow, score });
+  }
+  candidates.sort((left, right) => left.score - right.score);
+  return candidates[0] || null;
+}
+
+function layoutStyledItems(items, maxWidth) {
+  const tokens = normalizedLayoutTokens(items);
+  if (!tokens.length) return { lines: [[{ text: "", style: null }]], fontScale: 1 };
+  const totalWidth = tokensWidth(tokens);
+  if (totalWidth <= maxWidth) {
+    return { lines: [mergedLineFromTokens(tokens)], fontScale: 1 };
+  }
+  const twoLine = bestTwoLineLayout(tokens, maxWidth);
+  if (!twoLine) {
+    return { lines: [mergedLineFromTokens(tokens)], fontScale: Math.min(1, maxWidth / totalWidth) };
+  }
+  const widestLine = Math.max(twoLine.leftWidth, twoLine.rightWidth);
+  return {
+    lines: [mergedLineFromTokens(twoLine.left), mergedLineFromTokens(twoLine.right)],
+    fontScale: Math.min(1, maxWidth / widestLine),
+  };
+}
+
+export function layoutCaptionText(text, maxWidth) {
+  const items = Array.from(String(text || ""), (character) => ({ character, style: null }));
+  const layout = layoutStyledItems(items, Number(maxWidth));
+  return {
+    lines: layout.lines.map((line) => line.map((segment) => segment.text).join("")),
+    fontScale: layout.fontScale,
+  };
+}
+
+function styledCaptionLayout(cue, words, captionEffects, maxWidth) {
   const { cueCharacters, wordIndexes } = alignedCueWordIndexes(cue, words);
   const styles = wordIndexes.map((wordIndex) => resolvedCaptionStyle(
     captionEffectForWord(wordIndex, captionEffects),
@@ -732,29 +865,7 @@ function styledCaptionLines(cue, words, captionEffects, maxChars) {
     if (left && right && styleKey(left) === styleKey(right)) styles[index] = left;
   }
   const items = cueCharacters.map((character, index) => ({ character, style: styles[index] || null }));
-  const lines = [];
-  let current = [];
-  let currentWidth = 0;
-  const flush = () => {
-    const trimmed = trimLineItems(current);
-    if (trimmed.length) lines.push(mergeStyledItems(trimmed));
-    current = [];
-    currentWidth = 0;
-  };
-  for (const token of tokenizedStyledItems(items)) {
-    if (token.length === 1 && token[0].character === "\n") {
-      flush();
-      continue;
-    }
-    const tokenWidth = token.reduce((total, item) => (
-      total + (item.style?.font_scale || 1) * (/^\s$/u.test(item.character) ? 0.5 : 1)
-    ), 0);
-    if (current.length && currentWidth + tokenWidth > maxChars) flush();
-    current.push(...token);
-    currentWidth += tokenWidth;
-  }
-  flush();
-  return lines.length ? lines : [[{ text: "", style: null }]];
+  return layoutStyledItems(items, maxWidth);
 }
 
 export function loadCaptionCues(project, words) {
@@ -783,7 +894,7 @@ export function compileCaptionTrack(project, words, overlaysInput, effects = [],
   const minDimension = Math.min(project.displayWidth, project.displayHeight);
   const fontSize = Math.max(12, Math.round(minDimension * overlays.captions.style.font_size_ratio));
   const boxWidth = project.displayWidth * overlays.captions.box.width;
-  const maxChars = Math.max(6, Math.floor(boxWidth / fontSize));
+  const maxWidth = Math.max(6, boxWidth / fontSize);
   return {
     enabled: overlays.captions.enabled,
     source: source.source,
@@ -793,14 +904,14 @@ export function compileCaptionTrack(project, words, overlaysInput, effects = [],
     box: overlays.captions.box,
     style: overlays.captions.style,
     fontSize,
-    maxChars,
+    maxWidth,
     effectCount: captionEffects.length,
     cues: visibleCues.map((cue) => {
-      const styledLines = captionEffects.length
-        ? styledCaptionLines(cue, words, captionEffects, maxChars)
-        : splitCaptionLines(cue.text, maxChars).map((line) => [{ text: line, style: null }]);
+      const layout = styledCaptionLayout(cue, words, captionEffects, maxWidth);
+      const styledLines = layout.lines;
       return {
         ...cue,
+        layout_font_scale: layout.fontScale,
         lines: styledLines.map((line) => line.map((segment) => segment.text).join("")),
         styledLines,
       };
@@ -869,15 +980,17 @@ export function buildAss(project, captionTrack, structuredTrack = { states: [] }
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
   const captionEvents = captionTrack.enabled ? captionTrack.cues.map((cue) => {
+    const layoutFontScale = Number(cue.layout_font_scale) || 1;
+    const cueFontSize = Math.max(1, Math.round(captionTrack.fontSize * layoutFontScale));
     const text = (cue.styledLines || cue.lines.map((line) => [{ text: line, style: null }]))
       .map((line) => line.map((segment) => {
         const escaped = escapeAssText(segment.text);
         if (!segment.style) return escaped;
-        const emphasizedFontSize = Math.max(1, Math.round(captionTrack.fontSize * segment.style.font_scale));
-        return `{\\fs${emphasizedFontSize}\\c${assColor(segment.style.color)}}${escaped}{\\fs${captionTrack.fontSize}\\c${assColor(style.color)}}`;
+        const emphasizedFontSize = Math.max(1, Math.round(cueFontSize * segment.style.font_scale));
+        return `{\\fs${emphasizedFontSize}\\c${assColor(segment.style.color)}}${escaped}{\\fs${cueFontSize}\\c${assColor(style.color)}}`;
       }).join(""))
       .join("\\N");
-    return `Dialogue: 0,${assTime(cue.start)},${assTime(cue.end)},Default,,0,0,0,,{\\an2\\pos(${centerX},${bottomY})}${text}`;
+    return `Dialogue: 0,${assTime(cue.start)},${assTime(cue.end)},Default,,0,0,0,,{\\an2\\pos(${centerX},${bottomY})\\fs${cueFontSize}}${text}`;
   }) : [];
   const structuredEvents = (structuredTrack.states || []).flatMap((state) => {
     const events = [];

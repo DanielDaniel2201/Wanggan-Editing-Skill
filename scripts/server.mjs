@@ -20,7 +20,7 @@ import {
   saveOverlays,
 } from "./lib/captions.mjs";
 
-export const RENDER_ENGINE_VERSION = 8;
+export const RENDER_ENGINE_VERSION = 9;
 
 const uiRoot = fileURLToPath(new URL("../assets/review-ui/", import.meta.url));
 const contentTypes = {

@@ -21,6 +21,7 @@ import {
   compileScreenOverlays,
   compileStructuredOverlayTrack,
   defaultOverlays,
+  layoutCaptionText,
   parseSrt,
   splitCaptionLines,
   validateOverlays,
@@ -174,6 +175,16 @@ assert.throws(
 const generatedCues = captionsFromWords(words, { maxChars: 2, minChars: 2, pauseSeconds: 0.15 });
 assert.deepEqual(generatedCues.map((cue) => cue.text), ["这是", "重点", "危险"]);
 assert.deepEqual(splitCaptionLines("安全安全还是安全", 4), ["安全安全", "还是安全"]);
+assert.deepEqual(layoutCaptionText("Codex Claude Code", 12), {
+  lines: ["Codex Claude Code"],
+  fontScale: 1,
+});
+const balancedEnglish = layoutCaptionText("OpenAI Codex Claude Code", 6);
+assert.deepEqual(balancedEnglish.lines, ["OpenAI Codex", "Claude Code"]);
+assert.ok(balancedEnglish.fontScale >= 0.85 && balancedEnglish.fontScale < 1);
+const balancedChinese = layoutCaptionText("安全安全还是安全", 4);
+assert.deepEqual(balancedChinese.lines, ["安全安全", "还是安全"]);
+assert.equal(balancedChinese.fontScale, 1);
 
 const overlays = defaultOverlays();
 overlays.captions.enabled = true;
@@ -213,11 +224,14 @@ const emphasizedSegment = captionTrack.cues
 assert.equal(emphasizedSegment.text, "重点");
 assert.equal(emphasizedSegment.style.font_scale, 1.25);
 assert.equal(emphasizedSegment.style.color, "#FFF08A");
+assert.ok(captionTrack.cues.every((cue) => cue.lines.length <= 2));
+assert.ok(captionTrack.cues.every((cue) => cue.layout_font_scale > 0 && cue.layout_font_scale <= 1));
 const ass = buildAss(captionProject, captionTrack);
 assert.match(ass, /PlayResX: 720/);
 assert.match(ass, /Dialogue: 0/);
 assert.match(ass, /Noto Sans SC/);
 assert.match(ass, /\\fs\d+\\c&H008AF0FF/);
+assert.match(ass, /\\pos\(338,717\)\\fs\d+/);
 assert.equal((ass.match(/\\pos\(338,717\)/g) || []).length, captionTrack.cues.length);
 const captionFilter = buildFilter({ displayWidth: 720, displayHeight: 1280 }, effects, {
   overlayAssFile: "render-overlays.ass",
