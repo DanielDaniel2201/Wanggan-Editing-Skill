@@ -26,6 +26,17 @@
             <video id="video" src="/media" playsinline preload="metadata" aria-label="视频预览"></video>
             <canvas id="previewCanvas" class="preview-canvas" aria-label="网感缩放预览"></canvas>
             <div
+              id="structuredOverlay"
+              class="structured-overlay"
+              role="button"
+              tabindex="0"
+              aria-label="清单覆盖层，点击后可拖动，右下角可缩放"
+              title="点击选中，拖动调整位置"
+            >
+              <div id="structuredList" class="structured-list"></div>
+              <span id="structuredResizeHandle" class="structured-resize-handle" aria-hidden="true"></span>
+            </div>
+            <div
               id="subtitleOverlay"
               class="subtitle-overlay"
               role="button"
@@ -80,6 +91,14 @@
         <div class="subtitle-actions" aria-label="字幕控制">
           <h3>字幕</h3>
           <button id="subtitleToggleButton" class="subtitle-toggle" type="button" aria-pressed="false">启用</button>
+        </div>
+
+        <div class="structured-actions" aria-label="清单控制">
+          <div class="structured-actions__heading">
+            <h3>清单</h3>
+            <button id="newListButton" class="compact-button" data-structured-action type="button">新建</button>
+          </div>
+          <div id="structuredEditor" class="structured-editor"></div>
         </div>
 
         <p id="saveStatus" class="save-status" aria-live="polite"></p>

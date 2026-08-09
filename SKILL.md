@@ -1,6 +1,6 @@
 ---
 name: wanggan-editing
-description: 为口播视频按逐字时间戳添加网感缩放和普通烧录字幕，自动把重点和正面信息放大、把负面信息缩小并露出黑边，生成可逐字调整、启用字幕和热重载的本地审查网页，确认后导出最终 MP4，适用于网感剪辑、重点放大、负面缩小、普通字幕烧录、逐字稿驱动缩放、AI 初剪和人机协同视频剪辑
+description: 为口播视频按逐字时间戳添加网感缩放、普通烧录字幕和逐条累积清单，自动把重点和正面信息放大、把负面信息缩小并露出黑边，把枚举条目移到画面上方持续展示，生成可逐字调整、启用字幕和热重载的本地审查网页，确认后导出最终 MP4，适用于网感剪辑、重点放大、负面缩小、普通字幕烧录、清单枚举、逐字稿驱动缩放、AI 初剪和人机协同视频剪辑
 ---
 
 # 网感剪辑
@@ -63,6 +63,20 @@ node scripts/wanggan.mjs import --project "<任务目录>" --input "<AI 效果 J
 node scripts/wanggan.mjs add --project "<任务目录>" --start 12.467 --end 13.967 --effect-type short_emphasis
 ```
 
+需要添加清单枚举式结构时，调用 Agent 识别同一组有序条目，把条目范围和屏幕文案写入 `overlays.json` v2，再原子式导入
+
+```powershell
+node scripts/wanggan.mjs import-overlays --project "<任务目录>" --input "<AI 覆盖层 JSON>"
+```
+
+- 类型固定为 `progressive_list`
+- 每个条目提交连续的 `start_word_index`、`end_word_index` 和可选 `display_text`
+- 脚本重新计算 `start`、`end` 与 `source_text`
+- 播到一个条目时在画面上方增加该条目，已经出现的条目继续保留
+- 条目本身播放期间隐藏普通底部字幕
+- 条目之间的补充说明继续使用普通底部字幕，上方已有条目保持显示
+- 最后一条结束时整组清单立即消失
+
 6. 启动独立审查网页
 
 ```powershell
@@ -86,6 +100,15 @@ node scripts/wanggan.mjs serve --project "<任务目录>" --port 8911
 - 点击视频里的字幕区块后显示白色矩形，拖动区块可调整整条字幕轨道的位置
 - 白色矩形右下角提供圆形缩放按钮，拖动可调整整条字幕轨道的宽度和高度
 - 拖动和缩放期间字幕区块必须完整位于视频画面内，松开后立即写入 `overlays.json` 并热重载
+
+网页右侧“清单”区域用于审查结构化覆盖层
+
+- Agent 导入的清单会直接显示条目原话范围和屏幕文案
+- 点击条目编号跳到对应时间并选中逐字范围
+- 支持修改屏幕文案、用当前选择替换范围、追加条目和删除条目
+- 清单组支持启用、撤下和删除
+- 视频中的清单区块支持独立拖动和缩放，位置使用屏幕比例坐标
+- 所有清单修改点击即写入 `overlays.json` 并热重载
 
 网页顶部提供“保存工程”按钮
 
@@ -113,11 +136,19 @@ node scripts/wanggan.mjs status --project "<任务目录>"
 - 只接受 JSON 数组形式的逐字稿，每项必须包含 `text`、`start`、`end`
 - 字级 JSON 始终是必需输入，SRT 只是可选的普通字幕分句来源
 - SRT 必须按 UTF-8 读取，字幕条目时间有序、不重叠且不能超过视频时长
-- 普通字幕配置使用 [overlays-format.md](references/overlays-format.md) 的 `overlays.json` v1 格式
+- 普通字幕和结构化覆盖层配置使用 [overlays-format.md](references/overlays-format.md) 的 `overlays.json` v2 格式
+- 读取旧 v1 文件时保留字幕状态并补成空的 `timed_overlays`，下次保存写成 v2
 - 普通字幕默认关闭，只有用户在审查网页明确启用后才参与预览和最终渲染
 - 普通字幕位于画面缩放层上方，不跟随底层视频缩放或裁切
+- 结构化清单同样位于画面缩放层上方，不跟随底层视频缩放或裁切
 - 所有普通字幕条目共享 `overlays.json` 中同一个字幕区块，位置或尺寸修改必须应用于全部字幕条目
 - 字幕区块拖动和缩放必须限制在画面内，网页预限制和服务端校验缺一不可
+- 清单区块拖动和缩放必须限制在画面内，内容高度超过清单区域时拒绝保存
+- 清单条目时间必须精确对应逐字稿词语边界，按词序排列且不能重叠
+- 同一个清单最多 8 个条目，启用的清单组时间不能互相重叠
+- 清单条目出现后保持到整组结束，整组结束时间固定为最后一条的结束时间
+- 普通字幕只在清单条目自身的播放区间隐藏，条目间空档必须恢复
+- 预览必须使用服务端返回的 `playbackOverlays` 和避让后的 `playbackCaptions`
 - 编辑现场使用 [editor-state-format.md](references/editor-state-format.md) 的 `editor-state.json` v1 格式
 - “保存工程”必须保留已有 `effects.json` 和 `overlays.json`，只更新编辑现场文件
 - 重新启动同一个工程时必须恢复人工效果、字幕状态、播放位置和逐字稿选择范围
@@ -141,9 +172,9 @@ node scripts/wanggan.mjs status --project "<任务目录>"
 
 - `project.json` 保存只读输入路径、视频信息和输出路径
 - `effects.json` 使用 v3 接口，是 AI 与人类共同编辑的目标图层效果真源，旧 v2 文件读取后按画面效果兼容
-- `overlays.json` 使用 v1 接口，保存普通字幕启用状态、屏幕坐标区域和基础样式
+- `overlays.json` 使用 v2 接口，保存普通字幕、结构化清单、各自屏幕坐标和基础样式
 - 字幕局部强调保存在 `effects.json`，通过 `target: overlay.captions` 引用 `overlays.json` 中的字幕轨道
 - `editor-state.json` 使用 v1 接口，保存当前播放位置、逐字稿选择范围和最后保存时间
-- `render-captions.ass` 是从 SRT 或字级 JSON 编译出的渲染中间文件，不反向覆盖字幕来源
+- `render-overlays.ass` 是从普通字幕和结构化覆盖层共同编译出的渲染中间文件，不反向覆盖字幕或逐字稿来源
 - `render-status.json` 保存出片状态和错误信息
 - `render-filter.txt` 保存最终 FFmpeg 滤镜，便于检查预览与出片是否一致

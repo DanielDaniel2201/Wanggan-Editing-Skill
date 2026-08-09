@@ -43,6 +43,10 @@ try {
   const reviewHtml = await reviewHtmlResponse.text();
   assert.match(reviewHtml, /id="subtitleToggleButton"[^>]*>启用<\/button>/);
   assert.match(reviewHtml, /id="subtitleResizeHandle"/);
+  assert.match(reviewHtml, /id="structuredOverlay"/);
+  assert.match(reviewHtml, /id="structuredResizeHandle"/);
+  assert.match(reviewHtml, /id="structuredEditor"/);
+  assert.match(reviewHtml, /id="newListButton"/);
   assert.equal((reviewHtml.match(/data-selection-effect/g) || []).length, 5);
   assert.match(reviewHtml, /data-effect-type="short_emphasis"[^>]*>短促重点<\/button>/);
   assert.match(reviewHtml, /data-effect-type="large_bright"[^>]*>大字号、亮颜色<\/button>/);
@@ -57,8 +61,10 @@ try {
   assert.match(reviewApp, /segment\.style\?\.font_scale/);
   assert.match(reviewApp, /segment\.style\?\.color/);
   assert.match(reviewApp, /previewSelectionRange\(range\)/);
+  assert.match(reviewApp, /renderStructuredOverlay\(currentStructuredOverlayAt\(time\)\)/);
+  assert.match(reviewApp, /saveOverlayGroups/);
   assert.match(reviewApp, /selectedWords\.clear\(\);\s*await loadState\(\);\s*previewSelectionRange\(range\)/);
-  assert.match(reviewApp, /clickedEffectAction = event\.target\.closest\?\.\("\[data-selection-effect\], \[data-direct-effect\]"\)/);
+  assert.match(reviewApp, /clickedEffectAction = event\.target\.closest\?\.\([\s\S]*data-structured-action/);
   assert.match(reviewApp, /!clickedWord && !clickedEffectAction && selectedWords\.size > 0/);
   assert.doesNotMatch(reviewApp, /Number\(segment\.font_scale\)/);
   assert.doesNotMatch(reviewApp, /setShortEmphasisMenu|shortEmphasisOptions/);
@@ -68,11 +74,14 @@ try {
   const state = await stateResponse.json();
   assert.ok(state.words.length > 0);
   assert.ok(state.effects.length > 0);
-  assert.equal(state.renderEngineVersion, 7);
+  assert.equal(state.renderEngineVersion, 8);
   assert.ok(Array.isArray(state.playbackEffects));
   assert.ok(state.playbackEffects.length <= state.effects.length);
   assert.ok(Array.isArray(state.playbackCaptions));
   assert.ok(state.playbackCaptions.length > 0);
+  assert.ok(Array.isArray(state.playbackOverlays));
+  assert.equal(state.playbackOverlays.length, 0);
+  assert.equal(state.structuredOverlayTrack.groupCount, 0);
   assert.equal(state.captionTrack.enabled, false);
   assert.equal(state.captionTrack.source, sourceProject.subtitlePath ? "srt" : "transcript");
   assert.equal(state.editorState.currentTime, 0);
@@ -101,6 +110,37 @@ try {
   assert.equal(movedState.playbackCaptions.length, toggledState.playbackCaptions.length);
   assert.ok(movedState.playbackCaptions.every((caption) => Array.isArray(caption.lines)));
   assert.deepEqual(readJson(project.overlaysPath).captions.box, movedBox);
+
+  const listStartWordIndex = Math.max(0, sourceWords.length - 2);
+  const listEndWordIndex = sourceWords.length - 1;
+  const progressiveListResponse = await fetch(`${url}api/overlays`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...movedState.overlays,
+      timed_overlays: [{
+        id: "overlay-list-integration",
+        type: "progressive_list",
+        items: [{
+          start_word_index: listStartWordIndex,
+          end_word_index: listEndWordIndex,
+          display_text: "一、集成验证",
+        }],
+        source: "ai",
+      }],
+    }),
+  });
+  assert.equal(progressiveListResponse.status, 200);
+  const progressiveState = await (await fetch(`${url}api/state`)).json();
+  assert.equal(progressiveState.overlays.version, 2);
+  assert.equal(progressiveState.structuredOverlayTrack.groupCount, 1);
+  assert.equal(progressiveState.playbackOverlays.length, 1);
+  assert.equal(progressiveState.playbackOverlays[0].items.length, 1);
+  assert.equal(
+    progressiveState.structuredOverlayTrack.groups[0].items[0].source_text,
+    sourceWords.slice(listStartWordIndex, listEndWordIndex + 1).map((word) => word.text).join(""),
+  );
+  assert.equal(readJson(project.overlaysPath).timed_overlays.length, 1);
 
   const selectionEnd = Math.min(1, sourceWords.length - 1);
   const selectionEffectsResponse = await fetch(`${url}api/selection-effects`, {

@@ -29,6 +29,27 @@ const DEFAULT_CAPTIONS = Object.freeze({
   }),
 });
 
+const DEFAULT_PROGRESSIVE_LIST = Object.freeze({
+  enabled: true,
+  coordinate_space: "screen",
+  box: Object.freeze({
+    x: 0.08,
+    y: 0.12,
+    width: 0.84,
+    height: 0.30,
+    unit: "ratio",
+  }),
+  style: Object.freeze({
+    font_family: "Noto Sans SC",
+    font_size_ratio: 0.045,
+    color: "#FFFFFF",
+    stroke_color: "#000000",
+    stroke_width_ratio: 0.004,
+    item_gap_ratio: 0.014,
+    align: "left",
+  }),
+});
+
 function cloneDefaultCaptions() {
   return {
     ...DEFAULT_CAPTIONS,
@@ -37,10 +58,19 @@ function cloneDefaultCaptions() {
   };
 }
 
+function cloneDefaultProgressiveList() {
+  return {
+    ...DEFAULT_PROGRESSIVE_LIST,
+    box: { ...DEFAULT_PROGRESSIVE_LIST.box },
+    style: { ...DEFAULT_PROGRESSIVE_LIST.style },
+  };
+}
+
 export function defaultOverlays() {
   return {
-    version: 1,
+    version: 2,
     captions: cloneDefaultCaptions(),
+    timed_overlays: [],
   };
 }
 
@@ -62,12 +92,154 @@ function color(value, fallback, label) {
   return text;
 }
 
-export function validateOverlays(value) {
+function normalizedDisplayText(value, fallback, label) {
+  const text = String(value ?? fallback)
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) throw new WangganError(`${label}不能为空`);
+  if (Array.from(text).length > 120) {
+    throw new WangganError(`${label}不能超过 120 个字符`, { value: text });
+  }
+  return text;
+}
+
+function normalizedSource(value) {
+  return value === "human" ? "human" : "ai";
+}
+
+function validateProgressiveList(input, overlayIndex, words) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new WangganError(`第 ${overlayIndex + 1} 个定时覆盖层必须是对象`);
+  }
+  if (input.type !== "progressive_list") {
+    throw new WangganError("不支持的定时覆盖层类型", {
+      type: input.type ?? null,
+      allowed: ["progressive_list"],
+    });
+  }
+  if (!Array.isArray(words) || words.length === 0) {
+    throw new WangganError("校验定时覆盖层时必须提供逐字稿");
+  }
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    throw new WangganError("清单至少需要一个条目", { overlayIndex });
+  }
+  if (input.items.length > 8) {
+    throw new WangganError("单个清单最多支持 8 个条目", { overlayIndex, itemCount: input.items.length });
+  }
+
+  const defaults = cloneDefaultProgressiveList();
+  const boxInput = input.box || {};
+  const styleInput = input.style || {};
+  const box = {
+    x: finiteRatio(boxInput.x, defaults.box.x, "清单 x"),
+    y: finiteRatio(boxInput.y, defaults.box.y, "清单 y"),
+    width: finiteRatio(boxInput.width, defaults.box.width, "清单 width", { minimum: 0.05 }),
+    height: finiteRatio(boxInput.height, defaults.box.height, "清单 height", { minimum: 0.05 }),
+    unit: "ratio",
+  };
+  if (box.x + box.width > 1.000001 || box.y + box.height > 1.000001) {
+    throw new WangganError("清单区域不能超出视频画面", { box });
+  }
+
+  const overlayId = String(input.id || `overlay-list-${String(overlayIndex + 1).padStart(3, "0")}`).trim();
+  if (!overlayId) throw new WangganError("清单 id 不能为空", { overlayIndex });
+  const items = input.items.map((item, itemIndex) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new WangganError(`清单 ${overlayId} 的第 ${itemIndex + 1} 个条目必须是对象`);
+    }
+    const startWordIndex = Number(item.start_word_index);
+    const endWordIndex = Number(item.end_word_index);
+    if (
+      !Number.isInteger(startWordIndex)
+      || !Number.isInteger(endWordIndex)
+      || startWordIndex < 0
+      || endWordIndex < startWordIndex
+      || endWordIndex >= words.length
+    ) {
+      throw new WangganError("清单条目的逐字稿范围无效", {
+        overlayId,
+        itemIndex,
+        start_word_index: item.start_word_index ?? null,
+        end_word_index: item.end_word_index ?? null,
+        wordCount: words.length,
+      });
+    }
+    const selectedWords = words.slice(startWordIndex, endWordIndex + 1);
+    const sourceText = selectedWords.map((word) => word.text).join("");
+    return {
+      id: String(item.id || `${overlayId}-item-${String(itemIndex + 1).padStart(3, "0")}`).trim(),
+      start_word_index: startWordIndex,
+      end_word_index: endWordIndex,
+      start: selectedWords[0].start,
+      end: selectedWords.at(-1).end,
+      source_text: sourceText,
+      display_text: normalizedDisplayText(item.display_text, sourceText, "清单显示文字"),
+    };
+  });
+
+  const itemIds = new Set();
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (!item.id || itemIds.has(item.id)) {
+      throw new WangganError("清单条目 id 不能为空或重复", { overlayId, itemId: item.id });
+    }
+    itemIds.add(item.id);
+    if (index > 0 && item.start_word_index <= items[index - 1].end_word_index) {
+      throw new WangganError("清单条目必须按词序排列且不能重叠", {
+        overlayId,
+        previous: items[index - 1],
+        current: item,
+      });
+    }
+  }
+
+  return {
+    id: overlayId,
+    type: "progressive_list",
+    enabled: input.enabled === undefined ? defaults.enabled : Boolean(input.enabled),
+    coordinate_space: "screen",
+    box,
+    style: {
+      font_family: String(styleInput.font_family || defaults.style.font_family)
+        .replace(/[\r\n,]/g, " ")
+        .trim() || defaults.style.font_family,
+      font_size_ratio: finiteRatio(
+        styleInput.font_size_ratio,
+        defaults.style.font_size_ratio,
+        "清单字号比例",
+        { minimum: 0.015, maximum: 0.12 },
+      ),
+      color: color(styleInput.color, defaults.style.color, "清单颜色"),
+      stroke_color: color(styleInput.stroke_color, defaults.style.stroke_color, "清单描边颜色"),
+      stroke_width_ratio: finiteRatio(
+        styleInput.stroke_width_ratio,
+        defaults.style.stroke_width_ratio,
+        "清单描边比例",
+        { minimum: 0, maximum: 0.03 },
+      ),
+      item_gap_ratio: finiteRatio(
+        styleInput.item_gap_ratio,
+        defaults.style.item_gap_ratio,
+        "清单条目间距比例",
+        { minimum: 0, maximum: 0.08 },
+      ),
+      align: "left",
+    },
+    items,
+    start: items[0].start,
+    end: items.at(-1).end,
+    source: normalizedSource(input.source),
+    human_modified: Boolean(input.human_modified),
+  };
+}
+
+export function validateOverlays(value, options = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new WangganError("overlays.json 必须是对象");
   }
-  if (value.version !== 1) {
-    throw new WangganError("overlays.json 必须使用 v1 格式", { receivedVersion: value.version ?? null });
+  if (![1, 2].includes(value.version)) {
+    throw new WangganError("overlays.json 必须使用 v1 或 v2 格式", { receivedVersion: value.version ?? null });
   }
   const defaults = cloneDefaultCaptions();
   const input = value.captions || {};
@@ -83,8 +255,32 @@ export function validateOverlays(value) {
   if (normalizedBox.x + normalizedBox.width > 1.000001 || normalizedBox.y + normalizedBox.height > 1.000001) {
     throw new WangganError("字幕区域不能超出视频画面", { box: normalizedBox });
   }
+  const timedInputs = value.version === 2 ? value.timed_overlays ?? [] : [];
+  if (!Array.isArray(timedInputs)) {
+    throw new WangganError("timed_overlays 必须是数组");
+  }
+  const timedOverlays = timedInputs.map((input, index) => (
+    validateProgressiveList(input, index, options.words)
+  ));
+  const overlayIds = new Set();
+  const enabledByStart = [];
+  for (const overlay of timedOverlays) {
+    if (overlayIds.has(overlay.id)) throw new WangganError("定时覆盖层 id 重复", { id: overlay.id });
+    overlayIds.add(overlay.id);
+    if (overlay.enabled) enabledByStart.push(overlay);
+  }
+  enabledByStart.sort((left, right) => left.start - right.start);
+  for (let index = 1; index < enabledByStart.length; index += 1) {
+    if (enabledByStart[index].start < enabledByStart[index - 1].end) {
+      throw new WangganError("启用的清单时间不能重叠", {
+        previous: enabledByStart[index - 1],
+        current: enabledByStart[index],
+      });
+    }
+  }
+
   return {
-    version: 1,
+    version: 2,
     captions: {
       enabled: Boolean(input.enabled),
       coordinate_space: "screen",
@@ -110,16 +306,17 @@ export function validateOverlays(value) {
         align: "center",
       },
     },
+    timed_overlays: timedOverlays,
   };
 }
 
-export function loadOverlays(overlaysPath) {
+export function loadOverlays(overlaysPath, words = null) {
   if (!fs.existsSync(overlaysPath)) return defaultOverlays();
-  return validateOverlays(readJson(overlaysPath));
+  return validateOverlays(readJson(overlaysPath), { words });
 }
 
-export function saveOverlays(overlaysPath, overlays) {
-  const normalized = validateOverlays(overlays);
+export function saveOverlays(overlaysPath, overlays, words = null) {
+  const normalized = validateOverlays(overlays, { words });
   writeJson(overlaysPath, normalized);
   return normalized;
 }
@@ -252,6 +449,102 @@ export function splitCaptionLines(text, maxChars) {
   return output.length ? output : [""];
 }
 
+function mergedTimeRanges(ranges) {
+  const sorted = ranges
+    .map((range) => ({ ...range, start: roundTime(range.start), end: roundTime(range.end) }))
+    .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start)
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged = [];
+  for (const range of sorted) {
+    const previous = merged.at(-1);
+    if (previous && range.start <= previous.end + 0.0005) {
+      previous.end = Math.max(previous.end, range.end);
+      previous.overlay_ids = [...new Set([...(previous.overlay_ids || []), ...(range.overlay_ids || [])])];
+      previous.item_ids = [...new Set([...(previous.item_ids || []), ...(range.item_ids || [])])];
+    } else {
+      merged.push({
+        ...range,
+        overlay_ids: [...(range.overlay_ids || [])],
+        item_ids: [...(range.item_ids || [])],
+      });
+    }
+  }
+  return merged;
+}
+
+export function compileStructuredOverlayTrack(project, words, overlaysInput) {
+  const overlays = validateOverlays(overlaysInput, { words });
+  const minDimension = Math.min(project.displayWidth, project.displayHeight);
+  const groups = overlays.timed_overlays.map((overlay) => {
+    const fontSize = Math.max(12, Math.round(minDimension * overlay.style.font_size_ratio));
+    const strokeWidth = Math.max(1, Math.round(minDimension * overlay.style.stroke_width_ratio));
+    const itemGap = Math.round(project.displayHeight * overlay.style.item_gap_ratio);
+    const lineHeight = Math.max(fontSize, Math.round(fontSize * 1.25));
+    const boxWidth = project.displayWidth * overlay.box.width;
+    const boxHeight = project.displayHeight * overlay.box.height;
+    const maxChars = Math.max(6, Math.floor(boxWidth / fontSize));
+    const items = overlay.items.map((item) => ({
+      ...item,
+      lines: splitCaptionLines(item.display_text, maxChars),
+    }));
+    const lineCount = items.reduce((total, item) => total + item.lines.length, 0);
+    const requiredHeight = lineCount * lineHeight + Math.max(0, items.length - 1) * itemGap;
+    if (requiredHeight > boxHeight + 1) {
+      throw new WangganError("清单内容超出清单区域高度，请放大区域或缩短文字", {
+        overlayId: overlay.id,
+        requiredHeight,
+        availableHeight: boxHeight,
+      });
+    }
+    return {
+      ...overlay,
+      items,
+      fontSize,
+      strokeWidth,
+      itemGap,
+      lineHeight,
+      maxChars,
+    };
+  });
+
+  const states = [];
+  const suppressionRanges = [];
+  for (const group of groups) {
+    if (!group.enabled) continue;
+    for (let index = 0; index < group.items.length; index += 1) {
+      const item = group.items[index];
+      states.push({
+        id: `${group.id}-state-${String(index + 1).padStart(3, "0")}`,
+        overlay_id: group.id,
+        type: group.type,
+        start: item.start,
+        end: index + 1 < group.items.length ? group.items[index + 1].start : group.end,
+        box: group.box,
+        style: group.style,
+        fontSize: group.fontSize,
+        strokeWidth: group.strokeWidth,
+        itemGap: group.itemGap,
+        lineHeight: group.lineHeight,
+        items: group.items.slice(0, index + 1),
+      });
+      suppressionRanges.push({
+        start: item.start,
+        end: item.end,
+        overlay_ids: [group.id],
+        item_ids: [item.id],
+      });
+    }
+  }
+
+  return {
+    enabled: groups.some((group) => group.enabled),
+    groupCount: groups.length,
+    groups,
+    states,
+    suppressionRanges: mergedTimeRanges(suppressionRanges),
+  };
+}
+
 function alignableCharacter(value) {
   return /[\p{L}\p{N}]/u.test(value);
 }
@@ -291,6 +584,70 @@ function alignedCueWordIndexes(cue, words) {
     }
   }
   return { cueCharacters, wordIndexes };
+}
+
+function resolvedCueWordIndexes(cue, words) {
+  const aligned = alignedCueWordIndexes(cue, words);
+  const resolved = [...aligned.wordIndexes];
+  for (let index = 0; index < resolved.length; index += 1) {
+    if (Number.isInteger(resolved[index])) continue;
+    const left = resolved.slice(0, index).reverse().find(Number.isInteger);
+    const right = resolved.slice(index + 1).find(Number.isInteger);
+    resolved[index] = left ?? right ?? null;
+  }
+  return { cueCharacters: aligned.cueCharacters, wordIndexes: resolved };
+}
+
+function subtractTimeRanges(start, end, ranges) {
+  let visible = [{ start, end }];
+  for (const range of ranges) {
+    const next = [];
+    for (const interval of visible) {
+      if (range.end <= interval.start || range.start >= interval.end) {
+        next.push(interval);
+        continue;
+      }
+      if (range.start > interval.start) next.push({ start: interval.start, end: Math.min(range.start, interval.end) });
+      if (range.end < interval.end) next.push({ start: Math.max(range.end, interval.start), end: interval.end });
+    }
+    visible = next;
+  }
+  return visible.filter((interval) => interval.end - interval.start > 0.0005);
+}
+
+function captionFragmentText(cue, words, start, end) {
+  const { cueCharacters, wordIndexes } = resolvedCueWordIndexes(cue, words);
+  const activeWordIndexes = new Set(words
+    .filter((word) => word.end > start + 0.0005 && word.start < end - 0.0005)
+    .map((word) => word.wordIndex));
+  return cleanCaptionText(cueCharacters
+    .filter((_character, index) => activeWordIndexes.has(wordIndexes[index]))
+    .join(""));
+}
+
+function suppressCaptionCues(cues, words, suppressionRanges) {
+  if (!suppressionRanges.length) return cues;
+  const output = [];
+  for (const cue of cues) {
+    const overlaps = suppressionRanges.filter((range) => range.end > cue.start && range.start < cue.end);
+    if (!overlaps.length) {
+      output.push(cue);
+      continue;
+    }
+    const visibleIntervals = subtractTimeRanges(cue.start, cue.end, overlaps);
+    for (const interval of visibleIntervals) {
+      const text = captionFragmentText(cue, words, interval.start, interval.end);
+      if (!text) continue;
+      output.push({
+        ...cue,
+        id: `${cue.id}-part-${String(output.length + 1).padStart(3, "0")}`,
+        start: roundTime(interval.start),
+        end: roundTime(interval.end),
+        text,
+      });
+    }
+  }
+  return output;
 }
 
 function captionEffectForWord(wordIndex, captionEffects) {
@@ -418,9 +775,10 @@ export function loadCaptionCues(project, words) {
   };
 }
 
-export function compileCaptionTrack(project, words, overlaysInput, effects = []) {
-  const overlays = validateOverlays(overlaysInput);
+export function compileCaptionTrack(project, words, overlaysInput, effects = [], options = {}) {
+  const overlays = validateOverlays(overlaysInput, { words });
   const source = loadCaptionCues(project, words);
+  const visibleCues = suppressCaptionCues(source.cues, words, options.suppressionRanges || []);
   const captionEffects = effects.filter((effect) => effect.target === EFFECT_TARGETS.CAPTIONS_OVERLAY);
   const minDimension = Math.min(project.displayWidth, project.displayHeight);
   const fontSize = Math.max(12, Math.round(minDimension * overlays.captions.style.font_size_ratio));
@@ -431,12 +789,13 @@ export function compileCaptionTrack(project, words, overlaysInput, effects = [])
     source: source.source,
     sourcePath: source.sourcePath,
     cueCount: source.cues.length,
+    playbackCueCount: visibleCues.length,
     box: overlays.captions.box,
     style: overlays.captions.style,
     fontSize,
     maxChars,
     effectCount: captionEffects.length,
-    cues: source.cues.map((cue) => {
+    cues: visibleCues.map((cue) => {
       const styledLines = captionEffects.length
         ? styledCaptionLines(cue, words, captionEffects, maxChars)
         : splitCaptionLines(cue.text, maxChars).map((line) => [{ text: line, style: null }]);
@@ -446,6 +805,21 @@ export function compileCaptionTrack(project, words, overlaysInput, effects = [])
         styledLines,
       };
     }),
+  };
+}
+
+export function compileScreenOverlays(project, words, overlaysInput, effects = []) {
+  const overlays = validateOverlays(overlaysInput, { words });
+  const structuredTrack = compileStructuredOverlayTrack(project, words, overlays);
+  const captionTrack = compileCaptionTrack(project, words, overlays, effects, {
+    suppressionRanges: structuredTrack.suppressionRanges,
+  });
+  return {
+    overlays,
+    captionTrack,
+    structuredTrack,
+    playbackCaptions: captionTrack.cues,
+    playbackOverlays: structuredTrack.states,
   };
 }
 
@@ -471,7 +845,7 @@ function escapeAssText(text) {
     .replace(/}/g, "\\}");
 }
 
-export function buildAss(project, captionTrack) {
+export function buildAss(project, captionTrack, structuredTrack = { states: [] }) {
   const style = captionTrack.style;
   const box = captionTrack.box;
   const centerX = Math.round(project.displayWidth * (box.x + box.width / 2));
@@ -494,7 +868,7 @@ export function buildAss(project, captionTrack) {
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
-  const events = captionTrack.cues.map((cue) => {
+  const captionEvents = captionTrack.enabled ? captionTrack.cues.map((cue) => {
     const text = (cue.styledLines || cue.lines.map((line) => [{ text: line, style: null }]))
       .map((line) => line.map((segment) => {
         const escaped = escapeAssText(segment.text);
@@ -504,12 +878,42 @@ export function buildAss(project, captionTrack) {
       }).join(""))
       .join("\\N");
     return `Dialogue: 0,${assTime(cue.start)},${assTime(cue.end)},Default,,0,0,0,,{\\an2\\pos(${centerX},${bottomY})}${text}`;
+  }) : [];
+  const structuredEvents = (structuredTrack.states || []).flatMap((state) => {
+    const events = [];
+    const leftX = Math.round(project.displayWidth * state.box.x);
+    let topY = Math.round(project.displayHeight * state.box.y);
+    const styleFontName = String(state.style.font_family).replace(/[,{}\\]/g, " ");
+    for (const item of state.items) {
+      for (const line of item.lines) {
+        const tags = [
+          "\\an7",
+          `\\pos(${leftX},${topY})`,
+          `\\fn${styleFontName}`,
+          `\\fs${state.fontSize}`,
+          `\\c${assColor(state.style.color)}`,
+          `\\3c${assColor(state.style.stroke_color)}`,
+          `\\bord${state.strokeWidth}`,
+        ].join("");
+        events.push(
+          `Dialogue: 10,${assTime(state.start)},${assTime(state.end)},Default,,0,0,0,,{${tags}}${escapeAssText(line)}`,
+        );
+        topY += state.lineHeight;
+      }
+      topY += state.itemGap;
+    }
+    return events;
   });
-  return `${[...header, ...events].join("\n")}\n`;
+  return `${[...header, ...captionEvents, ...structuredEvents].join("\n")}\n`;
 }
 
-export function writeCaptionAss(project, captionTrack, fileName = "render-captions.ass") {
+export function writeOverlayAss(
+  project,
+  captionTrack,
+  structuredTrack,
+  fileName = "render-overlays.ass",
+) {
   const filePath = path.join(project.projectDir, fileName);
-  fs.writeFileSync(filePath, buildAss(project, captionTrack), "utf8");
+  fs.writeFileSync(filePath, buildAss(project, captionTrack, structuredTrack), "utf8");
   return filePath;
 }

@@ -56,12 +56,13 @@ try {
     "-movflags", "+faststart",
     videoPath,
   ]);
-  writeJson(transcriptPath, [
+  const transcriptWords = [
     { text: "普", start: 0.5, end: 0.7 },
     { text: "通", start: 0.7, end: 0.9 },
     { text: "字", start: 0.9, end: 1.1 },
     { text: "幕", start: 1.1, end: 1.3 },
-  ]);
+  ];
+  writeJson(transcriptPath, transcriptWords);
   fs.writeFileSync(subtitlePath, "1\n00:00:00,500 --> 00:00:01,500\n普通字幕验证\n", "utf8");
   saveEffects(effectsPath, [{
     effect_type: "large_bright",
@@ -71,7 +72,17 @@ try {
   }]);
   const overlays = defaultOverlays();
   overlays.captions.enabled = true;
-  saveOverlays(overlaysPath, overlays);
+  overlays.timed_overlays = [{
+    id: "overlay-list-render",
+    type: "progressive_list",
+    items: [{
+      start_word_index: 0,
+      end_word_index: 1,
+      display_text: "一、普通",
+    }],
+    source: "ai",
+  }];
+  saveOverlays(overlaysPath, overlays, transcriptWords);
   writeJson(renderStatusPath, { state: "idle" });
 
   const project = {
@@ -92,15 +103,22 @@ try {
   assert.equal(result.captions.enabled, true);
   assert.equal(result.captions.source, "srt");
   assert.equal(result.captions.cueCount, 1);
-  const assPath = path.join(tempDir, "render-captions.ass");
+  assert.equal(result.structuredOverlays.enabled, true);
+  assert.equal(result.structuredOverlays.groupCount, 1);
+  const assPath = path.join(tempDir, "render-overlays.ass");
   assert.ok(fs.existsSync(assPath));
   const ass = fs.readFileSync(assPath, "utf8");
   assert.match(ass, /\\fs\d+\\c&H008AF0FF/);
   assert.match(ass, /字幕/);
-  assert.match(fs.readFileSync(path.join(tempDir, "render-filter.txt"), "utf8"), /ass=filename='render-captions\.ass'/);
+  assert.match(ass, /Dialogue: 10/);
+  assert.match(ass, /一、普通/);
+  assert.doesNotMatch(ass, /Dialogue: 0[^\n]*普通/);
+  assert.match(fs.readFileSync(path.join(tempDir, "render-filter.txt"), "utf8"), /ass=filename='render-overlays\.ass'/);
 
   const before = brightPixels(outputPath, 0.2);
+  const duringList = brightPixels(outputPath, 0.7);
   const during = brightPixels(outputPath, 1.0);
+  assert.ok(duringList > before + 20, `清单期间亮像素没有显著增加 before=${before} duringList=${duringList}`);
   assert.ok(during > before + 20, `字幕期间亮像素没有显著增加 before=${before} during=${during}`);
   passed = true;
   process.stdout.write(`wanggan subtitle render passed before=${before} during=${during}\n`);

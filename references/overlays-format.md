@@ -1,16 +1,17 @@
-# 覆盖层接口 v1
+# 覆盖层接口 v2
 
-当前版本只实现普通字幕轨道
+`overlays.json` 保存普通字幕轨道和结构化定时覆盖层
 
-`overlays.json` 保存整条字幕轨道的开关、矩形区块和基础样式
-
-局部文字的“大字号、亮颜色”保存在 `effects.json` v3 中，并通过 `target: overlay.captions` 引用这条字幕轨道，因此不会复制或覆盖 `overlays.json` 的坐标和基础样式
+- `captions` 保存普通字幕开关、矩形区域和基础样式
+- `timed_overlays` 保存由逐字稿范围驱动的结构化覆盖层
+- 当前结构化类型为 `progressive_list`，用于按口播进度逐条累积显示清单
+- 字幕局部“大字号、亮颜色”仍保存在 `effects.json` v3，通过 `target: overlay.captions` 引用普通字幕轨道
 
 ## 标准文件
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "captions": {
     "enabled": false,
     "coordinate_space": "screen",
@@ -29,35 +30,114 @@
       "stroke_width_ratio": 0.0055,
       "align": "center"
     }
-  }
+  },
+  "timed_overlays": [
+    {
+      "id": "overlay-list-001",
+      "type": "progressive_list",
+      "enabled": true,
+      "coordinate_space": "screen",
+      "box": {
+        "x": 0.08,
+        "y": 0.12,
+        "width": 0.84,
+        "height": 0.3,
+        "unit": "ratio"
+      },
+      "style": {
+        "font_family": "Noto Sans SC",
+        "font_size_ratio": 0.045,
+        "color": "#FFFFFF",
+        "stroke_color": "#000000",
+        "stroke_width_ratio": 0.004,
+        "item_gap_ratio": 0.014,
+        "align": "left"
+      },
+      "items": [
+        {
+          "start_word_index": 120,
+          "end_word_index": 138,
+          "display_text": "一、第一条屏幕文案"
+        },
+        {
+          "start_word_index": 160,
+          "end_word_index": 181,
+          "display_text": "二、第二条屏幕文案"
+        }
+      ],
+      "source": "ai",
+      "human_modified": false
+    }
+  ]
 }
 ```
 
-## 字幕来源
+## 逐字稿与派生字段
 
-- `project.json` 有 `subtitlePath` 时读取该 UTF-8 SRT
-- 没有 `subtitlePath` 时从必需的扁平字级 JSON 自动生成字幕
-- SRT 只提供普通字幕分句，字级 JSON 的输入合同保持不变
+- 每个清单条目提交 `start_word_index`、`end_word_index` 和可选的 `display_text`
+- 脚本根据必需的扁平逐字稿重新计算 `start`、`end` 和 `source_text`
+- 没有 `display_text` 时使用派生的 `source_text`
+- `display_text` 适合去掉“第一个是”“第二个问题就是”等口语连接词
+- 审查台同时保留原话和屏幕文案，人工修改后写入 `human_modified: true`
+- 清单条目必须按词序排列，同一清单内不能重叠
+- 单个清单最多支持 8 个条目
+- 启用的两个清单组时间不能重叠
 
-## 坐标
+## 清单时间行为
 
-- `box` 使用相对视频宽高的比例坐标
-- `x` 和 `y` 是字幕区域左上角
-- `width` 和 `height` 是字幕可用区域
-- 四个数都必须在 `0` 到 `1` 之间，字幕区域不能超出画面
-- `coordinate_space` 固定为 `screen`，字幕绘制在画面缩放之后
+1. 第一条开始时显示第一条
 
-## 当前网页操作
+2. 第一条结束后继续保留第一条
 
-- 字幕关闭时，右侧切换按钮显示“启用”，点击后把 `captions.enabled` 保存为 `true`
-- 字幕开启时，同一个按钮显示“撤下”，点击后把 `captions.enabled` 保存为 `false`
-- 点击视频内的字幕区块后显示白色矩形边框
-- 按住字幕区块拖动可以修改 `box.x` 和 `box.y`
-- 按住右下角白色圆形按钮拖动可以修改 `box.width` 和 `box.height`
-- 拖动和缩放期间实时预览，松开后立即保存并热重载，不需要再点“保存工程”
-- 所有字幕条目共享同一个 `box`，一次移动或缩放会应用到整条字幕轨道
-- 网页和服务端都会限制字幕矩形完整位于视频画面内，宽高最小为画面的 `5%`
-- 修改后服务端发送热重载事件
-- 网页预览和最终渲染读取同一个启用状态和同一组编译字幕
-- 选中文字后可以通过平级的“大字号、亮颜色”选项启用局部强调，效果直接切换，无进入或退出过渡
-- 局部效果只改变所选文字的字号和颜色，仍然使用全局字幕区块、字体、描边和对齐方式
+3. 第二条开始时在下方增加第二条，后续条目依次累积
+
+4. 播放清单条目本身时，普通底部字幕隐藏
+
+5. 两个条目之间有补充说明时，上方清单继续保留，底部普通字幕恢复
+
+6. 最后一条结束时整组清单立即消失，普通字幕恢复
+
+第一版使用直接出现和直接消失，不提供淡入、弹跳或任意动画参数
+
+## 字幕来源与避让
+
+- `project.json` 有 `subtitlePath` 时读取对应 UTF-8 SRT
+- 没有 `subtitlePath` 时从扁平字级 JSON 自动生成普通字幕
+- 结构化覆盖层的时间始终来自字级 JSON
+- 服务端会按清单条目的字级范围切分普通字幕，只移除重叠文字
+- 浏览器预览和最终 ASS 使用同一组 `playbackCaptions` 与 `playbackOverlays`
+
+## 坐标与尺寸
+
+- 所有 `box` 使用相对视频宽高的比例坐标
+- `x` 和 `y` 是区域左上角
+- `width` 和 `height` 是可用区域
+- 四个数都在 `0` 到 `1` 之间，区域不能超出画面
+- `coordinate_space` 固定为 `screen`，覆盖层绘制在画面缩放之后
+- 内容高度超过清单区域时拒绝保存，避免浏览器预览和成片静默溢出
+
+## 审查网页操作
+
+- 字幕开关、字幕拖动和缩放保持原有行为
+- 选择连续逐字稿后可以新建清单或追加条目
+- 点击条目编号会跳到对应时间并选中原始逐字范围
+- 条目支持修改屏幕文案、用当前选择替换范围和删除
+- 清单组支持启用、撤下和删除
+- 视频中的清单区块支持独立拖动和缩放
+- 所有修改立即写入 `overlays.json` 并热重载
+
+## 接口与命令
+
+```powershell
+node scripts/wanggan.mjs import-overlays --project "<任务目录>" --input "<覆盖层 JSON>"
+```
+
+- `PUT /api/overlays` 原子式替换并校验完整覆盖层文件
+- `PATCH /api/overlays/captions` 继续负责普通字幕开关和字幕区域
+- `GET /api/state` 返回 `structuredOverlayTrack`、`playbackOverlays` 和避让后的 `playbackCaptions`
+
+## v1 工程迁移
+
+- 读取 `overlays.json` v1 时自动补成 `version: 2` 和空的 `timed_overlays`
+- 当前字幕启用状态、位置和样式保持不变
+- 下次保存覆盖层时写成 v2

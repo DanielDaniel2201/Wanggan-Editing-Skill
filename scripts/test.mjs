@@ -18,6 +18,8 @@ import {
   buildAss,
   captionsFromWords,
   compileCaptionTrack,
+  compileScreenOverlays,
+  compileStructuredOverlayTrack,
   defaultOverlays,
   parseSrt,
   splitCaptionLines,
@@ -177,6 +179,8 @@ const overlays = defaultOverlays();
 overlays.captions.enabled = true;
 overlays.captions.box = { x: 0.18, y: 0.24, width: 0.58, height: 0.32, unit: "ratio" };
 const normalizedOverlays = validateOverlays(overlays);
+assert.equal(normalizedOverlays.version, 2);
+assert.deepEqual(normalizedOverlays.timed_overlays, []);
 assert.deepEqual(normalizedOverlays.captions.box, overlays.captions.box);
 assert.throws(
   () => validateOverlays({
@@ -216,9 +220,66 @@ assert.match(ass, /Noto Sans SC/);
 assert.match(ass, /\\fs\d+\\c&H008AF0FF/);
 assert.equal((ass.match(/\\pos\(338,717\)/g) || []).length, captionTrack.cues.length);
 const captionFilter = buildFilter({ displayWidth: 720, displayHeight: 1280 }, effects, {
-  captionAssFile: "render-captions.ass",
+  overlayAssFile: "render-overlays.ass",
 });
-assert.match(captionFilter, /\[base\];\[base\]ass=filename='render-captions\.ass'\[v\]/);
+assert.match(captionFilter, /\[base\];\[base\]ass=filename='render-overlays\.ass'\[v\]/);
+
+const progressiveOverlays = validateOverlays({
+  ...normalizedOverlays,
+  timed_overlays: [{
+    id: "overlay-list-test",
+    type: "progressive_list",
+    items: [
+      { start_word_index: 0, end_word_index: 1, display_text: "一、这是" },
+      { start_word_index: 4, end_word_index: 5, display_text: "二、危险" },
+    ],
+    source: "ai",
+  }],
+}, { words });
+const structuredTrack = compileStructuredOverlayTrack(captionProject, words, progressiveOverlays);
+assert.equal(structuredTrack.groupCount, 1);
+assert.equal(structuredTrack.states.length, 2);
+assert.equal(structuredTrack.states[0].start, 0.1);
+assert.equal(structuredTrack.states[0].end, 0.8);
+assert.equal(structuredTrack.states[0].items.length, 1);
+assert.equal(structuredTrack.states[1].items.length, 2);
+assert.deepEqual(
+  structuredTrack.suppressionRanges.map((range) => [range.start, range.end]),
+  [[0.1, 0.3], [0.8, 1]],
+);
+assert.equal(progressiveOverlays.timed_overlays[0].items[0].source_text, "这是");
+const compiledScreen = compileScreenOverlays(
+  captionProject,
+  words,
+  progressiveOverlays,
+  captionEffects,
+);
+assert.deepEqual(compiledScreen.playbackCaptions.map((cue) => cue.text), ["重点"]);
+assert.equal(compiledScreen.playbackOverlays.length, 2);
+const overlayAss = buildAss(captionProject, compiledScreen.captionTrack, compiledScreen.structuredTrack);
+assert.match(overlayAss, /Dialogue: 10/);
+assert.match(overlayAss, /一、这是/);
+assert.match(overlayAss, /二、危险/);
+assert.doesNotMatch(overlayAss, /Dialogue: 0[^\n]*这是/);
+assert.throws(
+  () => validateOverlays({
+    ...normalizedOverlays,
+    timed_overlays: [{
+      type: "progressive_list",
+      items: [
+        { start_word_index: 0, end_word_index: 2 },
+        { start_word_index: 2, end_word_index: 3 },
+      ],
+    }],
+  }, { words }),
+  /不能重叠/,
+);
+const migratedV1 = validateOverlays({
+  version: 1,
+  captions: overlays.captions,
+});
+assert.equal(migratedV1.version, 2);
+assert.deepEqual(migratedV1.timed_overlays, []);
 
 assert.throws(() => validateTranscript([{ text: "错", start: 1, end: 0.5 }]), /start < end/);
 

@@ -12,9 +12,9 @@ import {
   writeJson,
 } from "./core.mjs";
 import {
-  compileCaptionTrack,
+  compileScreenOverlays,
   loadOverlays,
-  writeCaptionAss,
+  writeOverlayAss,
 } from "./captions.mjs";
 
 export function commandAvailable(command, args = ["-version"]) {
@@ -170,24 +170,28 @@ export function buildFilter(project, effects, options = {}) {
   const padHeight = even(height * maxScale);
   const expression = buildScaleExpression(effects);
   const videoFilter = `[0:v]scale=w='trunc(${width}*(${expression})/2)*2':h='trunc(${height}*(${expression})/2)*2':eval=frame:flags=lanczos,pad=${padWidth}:${padHeight}:(ow-iw)/2:(oh-ih)/2:black:eval=frame,crop=${width}:${height}:(iw-ow)/2:(ih-oh)/2,setsar=1,format=yuv420p`;
-  if (!options.captionAssFile) return `${videoFilter}[v]`;
-  const safeAssFile = String(options.captionAssFile).replace(/['\\]/g, "");
+  const overlayAssFile = options.overlayAssFile || options.captionAssFile;
+  if (!overlayAssFile) return `${videoFilter}[v]`;
+  const safeAssFile = String(overlayAssFile).replace(/['\\]/g, "");
   return `${videoFilter}[base];[base]ass=filename='${safeAssFile}'[v]`;
 }
 
 export async function renderProject(project, options = {}) {
   const words = loadTranscript(project.transcriptPath);
   const effects = loadEffects(project.effectsPath, words);
-  const overlays = loadOverlays(project.overlaysPath);
-  const captionTrack = compileCaptionTrack(project, words, overlays, effects);
+  const overlays = loadOverlays(project.overlaysPath, words);
+  const compiledOverlays = compileScreenOverlays(project, words, overlays, effects);
+  const { captionTrack, structuredTrack } = compiledOverlays;
   const outputPath = path.resolve(options.outputPath || project.outputPath);
   if (fs.existsSync(outputPath) && !options.overwrite) {
     throw new WangganError("输出文件已经存在，不会覆盖", { outputPath }, 409);
   }
-  const captionAssFile = captionTrack.enabled && captionTrack.cues.length
-    ? path.basename(writeCaptionAss(project, captionTrack))
+  const hasScreenOverlays = (captionTrack.enabled && captionTrack.cues.length)
+    || structuredTrack.states.length;
+  const overlayAssFile = hasScreenOverlays
+    ? path.basename(writeOverlayAss(project, captionTrack, structuredTrack))
     : null;
-  const filter = buildFilter(project, effects, { captionAssFile });
+  const filter = buildFilter(project, effects, { overlayAssFile });
   const filterPath = path.join(project.projectDir, "render-filter.txt");
   fs.writeFileSync(filterPath, `${filter}\n`, "utf8");
   const statusBase = { outputPath, startedAt: new Date().toISOString(), progress: 0 };
@@ -238,6 +242,11 @@ export async function renderProject(project, options = {}) {
         enabled: captionTrack.enabled,
         source: captionTrack.source,
         cueCount: captionTrack.cueCount,
+      },
+      structuredOverlays: {
+        enabled: structuredTrack.enabled,
+        groupCount: structuredTrack.groupCount,
+        stateCount: structuredTrack.states.length,
       },
     };
     writeJson(project.renderStatusPath, complete);

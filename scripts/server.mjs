@@ -15,12 +15,12 @@ import {
 } from "./lib/core.mjs";
 import { compilePlaybackEffects, renderProject } from "./lib/render.mjs";
 import {
-  compileCaptionTrack,
+  compileScreenOverlays,
   loadOverlays,
   saveOverlays,
 } from "./lib/captions.mjs";
 
-export const RENDER_ENGINE_VERSION = 7;
+export const RENDER_ENGINE_VERSION = 8;
 
 const uiRoot = fileURLToPath(new URL("../assets/review-ui/", import.meta.url));
 const contentTypes = {
@@ -248,8 +248,9 @@ export function startServer(projectInput, port = 8911) {
       }
       if (request.method === "GET" && pathname === "/api/state") {
         const state = projectState(project);
-        const overlays = loadOverlays(project.overlaysPath);
-        const captionTrack = compileCaptionTrack(project, state.words, overlays, state.effects);
+        const overlays = loadOverlays(project.overlaysPath, state.words);
+        const compiledOverlays = compileScreenOverlays(project, state.words, overlays, state.effects);
+        const { captionTrack, structuredTrack } = compiledOverlays;
         sendJson(response, 200, {
           ...state,
           overlays,
@@ -259,11 +260,19 @@ export function startServer(projectInput, port = 8911) {
             sourcePath: captionTrack.sourcePath,
             cueCount: captionTrack.cueCount,
             effectCount: captionTrack.effectCount,
+            playbackCueCount: captionTrack.playbackCueCount,
             box: captionTrack.box,
             style: captionTrack.style,
             fontSize: captionTrack.fontSize,
           },
-          playbackCaptions: captionTrack.cues,
+          structuredOverlayTrack: {
+            enabled: structuredTrack.enabled,
+            groupCount: structuredTrack.groupCount,
+            groups: structuredTrack.groups,
+            suppressionRanges: structuredTrack.suppressionRanges,
+          },
+          playbackCaptions: compiledOverlays.playbackCaptions,
+          playbackOverlays: compiledOverlays.playbackOverlays,
           playbackEffects: compilePlaybackEffects(state.effects),
           renderEngineVersion: RENDER_ENGINE_VERSION,
         });
@@ -352,12 +361,21 @@ export function startServer(projectInput, port = 8911) {
         if (hasBox && (!body.box || typeof body.box !== "object" || Array.isArray(body.box))) {
           throw new WangganError("字幕区块必须是 box 对象");
         }
-        const overlays = loadOverlays(project.overlaysPath);
+        const words = loadTranscript(project.transcriptPath);
+        const overlays = loadOverlays(project.overlaysPath, words);
         if (hasEnabled) overlays.captions.enabled = body.enabled;
         if (hasBox) overlays.captions.box = { ...overlays.captions.box, ...body.box };
-        const saved = saveOverlays(project.overlaysPath, overlays);
+        const saved = saveOverlays(project.overlaysPath, overlays, words);
         sendJson(response, 200, { overlays: saved });
         broadcast("captions-updated");
+        return;
+      }
+      if (request.method === "PUT" && pathname === "/api/overlays") {
+        const body = await readBody(request);
+        const words = loadTranscript(project.transcriptPath);
+        const saved = saveOverlays(project.overlaysPath, body, words);
+        sendJson(response, 200, { overlays: saved });
+        broadcast("overlays-updated");
         return;
       }
       if (request.method === "POST" && pathname === "/api/save-project") {

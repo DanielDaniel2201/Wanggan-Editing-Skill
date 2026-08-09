@@ -25,6 +25,7 @@ import {
 } from "./lib/render.mjs";
 import {
   compileCaptionTrack,
+  compileScreenOverlays,
   defaultOverlays,
   loadOverlays,
   saveOverlays,
@@ -71,6 +72,7 @@ function help() {
   process.stdout.write(`  doctor\n`);
   process.stdout.write(`  init --video <path> --transcript <path> [--subtitle <srt>] --project <dir>\n`);
   process.stdout.write(`  import --project <dir> --input <effects.json>\n`);
+  process.stdout.write(`  import-overlays --project <dir> --input <overlays.json>\n`);
   process.stdout.write(`  add --project <dir> --start <seconds> --end <seconds> --effect-type <type>\n`);
   process.stdout.write(`  validate --project <dir>\n`);
   process.stdout.write(`  status --project <dir>\n`);
@@ -167,6 +169,19 @@ function importEffects(flags) {
   print({ ok: true, effectCount: effects.length, effects });
 }
 
+function importOverlays(flags) {
+  const project = loadProject(required(flags, "project"));
+  const inputPath = ensureFile(required(flags, "input"), "覆盖层文件");
+  const words = loadTranscript(project.transcriptPath);
+  const overlays = saveOverlays(project.overlaysPath, readJson(inputPath), words);
+  print({
+    ok: true,
+    overlaysVersion: overlays.version,
+    timedOverlayCount: overlays.timed_overlays.length,
+    overlays,
+  });
+}
+
 function addEffect(flags) {
   const project = loadProject(required(flags, "project"));
   const words = loadTranscript(project.transcriptPath);
@@ -185,12 +200,9 @@ function addEffect(flags) {
 function validateProject(flags) {
   const project = loadProject(required(flags, "project"));
   const state = projectState(project);
-  const captionTrack = compileCaptionTrack(
-    project,
-    state.words,
-    loadOverlays(project.overlaysPath),
-    state.effects,
-  );
+  const overlays = loadOverlays(project.overlaysPath, state.words);
+  const compiledOverlays = compileScreenOverlays(project, state.words, overlays, state.effects);
+  const { captionTrack, structuredTrack } = compiledOverlays;
   print({
     ok: true,
     wordCount: state.words.length,
@@ -203,14 +215,20 @@ function validateProject(flags) {
       sourcePath: captionTrack.sourcePath,
       cueCount: captionTrack.cueCount,
     },
+    structuredOverlays: {
+      enabled: structuredTrack.enabled,
+      groupCount: structuredTrack.groupCount,
+      stateCount: structuredTrack.states.length,
+    },
   });
 }
 
 function fullProjectState(projectInput) {
   const project = typeof projectInput === "string" ? loadProject(projectInput) : projectInput;
   const state = projectState(project);
-  const overlays = loadOverlays(project.overlaysPath);
-  const captionTrack = compileCaptionTrack(project, state.words, overlays, state.effects);
+  const overlays = loadOverlays(project.overlaysPath, state.words);
+  const compiledOverlays = compileScreenOverlays(project, state.words, overlays, state.effects);
+  const { captionTrack, structuredTrack } = compiledOverlays;
   return {
     ...state,
     overlays,
@@ -220,6 +238,13 @@ function fullProjectState(projectInput) {
       sourcePath: captionTrack.sourcePath,
       cueCount: captionTrack.cueCount,
     },
+    structuredOverlayTrack: {
+      enabled: structuredTrack.enabled,
+      groupCount: structuredTrack.groupCount,
+      groups: structuredTrack.groups,
+      suppressionRanges: structuredTrack.suppressionRanges,
+    },
+    playbackOverlays: compiledOverlays.playbackOverlays,
   };
 }
 
@@ -245,6 +270,7 @@ export async function main(argv = process.argv.slice(2)) {
     case "doctor": doctor(); break;
     case "init": await initProject(flags); break;
     case "import": importEffects(flags); break;
+    case "import-overlays": importOverlays(flags); break;
     case "add": addEffect(flags); break;
     case "validate": validateProject(flags); break;
     case "status": print(fullProjectState(required(flags, "project"))); break;
