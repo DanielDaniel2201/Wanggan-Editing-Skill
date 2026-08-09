@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>网感剪辑审查台</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">WANGGAN EDITING V2</p>
+        <h1>网感剪辑审查台</h1>
+      </div>
+      <div class="topbar__actions">
+        <span id="connectionStatus" class="status status--muted">正在连接</span>
+        <button id="saveProjectButton" class="button" type="button">保存工程</button>
+        <button id="renderButton" class="button button--primary" type="button">确认并生成成片</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section id="previewPanel" class="panel preview-panel">
+        <div id="videoFrame" class="video-frame">
+          <div id="videoStage" class="video-stage">
+            <video id="video" src="/media" playsinline preload="metadata" aria-label="视频预览"></video>
+            <canvas id="previewCanvas" class="preview-canvas" aria-label="网感缩放预览"></canvas>
+            <div
+              id="subtitleOverlay"
+              class="subtitle-overlay"
+              role="button"
+              tabindex="0"
+              aria-label="字幕区块，点击后可拖动，右下角可缩放"
+              title="点击选中，拖动调整位置"
+            >
+              <span id="subtitleText" class="subtitle-text"></span>
+              <span id="subtitleResizeHandle" class="subtitle-resize-handle" aria-hidden="true"></span>
+            </div>
+          </div>
+          <div id="activeEffectBadge" class="active-effect">原画面 100%</div>
+        </div>
+        <div id="playerControls" class="player-controls" aria-label="视频播放控制">
+          <button id="playPauseButton" class="player-button" type="button" aria-label="播放" title="播放">▶</button>
+          <input id="seekSlider" class="seek-slider" type="range" min="0" max="0" step="0.01" value="0" aria-label="视频进度">
+          <span id="playerTime" class="player-time">0:00 / 0:00</span>
+        </div>
+      </section>
+
+      <section class="panel transcript-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">WORD LEVEL TIMELINE</p>
+            <h2>逐字稿</h2>
+          </div>
+          <div class="legend" aria-label="颜色说明">
+            <span><i class="legend__dot legend__dot--in"></i>重点</span>
+            <span><i class="legend__dot legend__dot--out"></i>负面</span>
+            <span><i class="legend__line"></i>双线表示长效果</span>
+            <span><i class="legend__dot legend__dot--selected"></i>当前选择</span>
+          </div>
+        </div>
+        <p class="hint">从未选中的文字开始拖动可连续选中，从已选中的文字开始拖动可连续取消</p>
+        <div id="transcript" class="transcript" aria-label="逐字稿"></div>
+      </section>
+
+      <aside class="panel decision-panel">
+        <div class="panel-heading">
+          <h2>效果类型</h2>
+        </div>
+
+        <div class="effect-buttons">
+          <button class="scale-button scale-button--in" data-selection-effect data-target="video.main" data-effect-type="short_emphasis" type="button" aria-pressed="false">短促重点</button>
+          <button class="scale-button scale-button--out" data-selection-effect data-target="video.main" data-effect-type="short_negative" type="button" aria-pressed="false">短促负面</button>
+          <button class="scale-button scale-button--in scale-button--long" data-selection-effect data-target="video.main" data-effect-type="long_emphasis" type="button" aria-pressed="false">长重点</button>
+          <button class="scale-button scale-button--out scale-button--long" data-selection-effect data-target="video.main" data-effect-type="long_negative" type="button" aria-pressed="false">长负面</button>
+          <button class="scale-button scale-button--caption" data-selection-effect data-target="overlay.captions" data-effect-type="large_bright" type="button" aria-pressed="false">大字号、亮颜色</button>
+          <button class="scale-button scale-button--clear" data-direct-effect data-clear-effect type="button">清除画面效果</button>
+        </div>
+
+        <div class="subtitle-actions" aria-label="字幕控制">
+          <h3>字幕</h3>
+          <button id="subtitleToggleButton" class="subtitle-toggle" type="button" aria-pressed="false">启用</button>
+        </div>
+
+        <p id="saveStatus" class="save-status" aria-live="polite"></p>
+      </aside>
+    </main>
+
+    <script type="module" src="/app-v2.js"></script>
+  </body>
+</html>
