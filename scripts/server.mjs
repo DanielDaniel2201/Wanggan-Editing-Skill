@@ -20,7 +20,7 @@ import {
   saveOverlays,
 } from "./lib/captions.mjs";
 
-export const RENDER_ENGINE_VERSION = 9;
+export const RENDER_ENGINE_VERSION = 16;
 
 const uiRoot = fileURLToPath(new URL("../assets/review-ui/", import.meta.url));
 const contentTypes = {
@@ -352,8 +352,11 @@ export function startServer(projectInput, port = 8911) {
         const body = await readBody(request);
         const hasEnabled = Object.hasOwn(body, "enabled");
         const hasBox = Object.hasOwn(body, "box");
-        if (!hasEnabled && !hasBox) {
-          throw new WangganError("字幕修改必须提交 enabled 或 box");
+        const hasCueFont = Object.hasOwn(body, "font_family");
+        const hasCueFontSize = Object.hasOwn(body, "font_size_ratio");
+        const hasCueOverride = hasCueFont || hasCueFontSize;
+        if (!hasEnabled && !hasBox && !hasCueOverride) {
+          throw new WangganError("字幕修改必须提交 enabled、box、cue 字体或 cue 字号");
         }
         if (hasEnabled && typeof body.enabled !== "boolean") {
           throw new WangganError("字幕开关必须是 enabled: true 或 false");
@@ -361,10 +364,34 @@ export function startServer(projectInput, port = 8911) {
         if (hasBox && (!body.box || typeof body.box !== "object" || Array.isArray(body.box))) {
           throw new WangganError("字幕区块必须是 box 对象");
         }
+        if (hasCueOverride && (
+          typeof body.cue_id !== "string"
+          || !/^caption-\d{3,}$/.test(body.cue_id)
+        )) {
+          throw new WangganError("单条字幕样式必须提交有效的 cue_id");
+        }
+        if (hasCueFont && typeof body.font_family !== "string") {
+          throw new WangganError("字幕字体必须是字符串");
+        }
+        if (hasCueFontSize && !Number.isFinite(Number(body.font_size_ratio))) {
+          throw new WangganError("字幕字号比例必须是数字");
+        }
         const words = loadTranscript(project.transcriptPath);
         const overlays = loadOverlays(project.overlaysPath, words);
         if (hasEnabled) overlays.captions.enabled = body.enabled;
         if (hasBox) overlays.captions.box = { ...overlays.captions.box, ...body.box };
+        if (hasCueFont) {
+          overlays.captions.cue_fonts = {
+            ...(overlays.captions.cue_fonts || {}),
+            [body.cue_id]: body.font_family,
+          };
+        }
+        if (hasCueFontSize) {
+          overlays.captions.cue_font_size_ratios = {
+            ...(overlays.captions.cue_font_size_ratios || {}),
+            [body.cue_id]: Number(body.font_size_ratio),
+          };
+        }
         const saved = saveOverlays(project.overlaysPath, overlays, words);
         sendJson(response, 200, { overlays: saved });
         broadcast("captions-updated");

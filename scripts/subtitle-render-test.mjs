@@ -61,25 +61,37 @@ try {
     { text: "通", start: 0.7, end: 0.9 },
     { text: "字", start: 0.9, end: 1.1 },
     { text: "幕", start: 1.1, end: 1.3 },
+    { text: "继", start: 1.5, end: 1.7 },
+    { text: "续", start: 1.7, end: 1.9 },
   ];
   writeJson(transcriptPath, transcriptWords);
-  fs.writeFileSync(subtitlePath, "1\n00:00:00,500 --> 00:00:01,500\n普通字幕验证\n", "utf8");
+  fs.writeFileSync(subtitlePath, "1\n00:00:00,500 --> 00:00:02,100\n普通字幕验证继续\n", "utf8");
   saveEffects(effectsPath, [{
     effect_type: "large_bright",
-    start_word_index: 2,
-    end_word_index: 3,
+    start_word_index: 4,
+    end_word_index: 5,
     source: "human",
   }]);
   const overlays = defaultOverlays();
   overlays.captions.enabled = true;
+  overlays.captions.cue_fonts = { "caption-001": "华文中宋" };
   overlays.timed_overlays = [{
-    id: "overlay-list-render",
-    type: "progressive_list",
-    items: [{
-      start_word_index: 0,
-      end_word_index: 1,
-      display_text: "一、普通",
-    }],
+    id: "overlay-keywords-render",
+    type: "progressive_keywords",
+    layout: "auto",
+    enter_animation: "pop",
+    items: [
+      {
+        start_word_index: 0,
+        end_word_index: 1,
+        display_text: "普通人",
+      },
+      {
+        start_word_index: 2,
+        end_word_index: 3,
+        display_text: "做字幕",
+      },
+    ],
     source: "ai",
   }];
   saveOverlays(overlaysPath, overlays, transcriptWords);
@@ -109,16 +121,23 @@ try {
   assert.ok(fs.existsSync(assPath));
   const ass = fs.readFileSync(assPath, "utf8");
   assert.match(ass, /\\fs\d+\\c&H008AF0FF/);
+  assert.match(ass, /Style: Default,Microsoft YaHei/);
+  assert.match(ass, /Dialogue: 0[^\n]*\\fn华文中宋/);
+  assert.match(ass, /Dialogue: 10[^\n]*\\fnMicrosoft YaHei/);
+  assert.doesNotMatch(ass, /Noto Sans SC/);
   assert.match(ass, /字幕/);
   assert.match(ass, /Dialogue: 10/);
-  assert.match(ass, /一、普通/);
+  assert.match(ass, /普通人/);
+  assert.match(ass, /做字幕/);
+  assert.match(ass, /\\fad\(/);
+  assert.match(ass, /\\fscx85\\fscy85/);
   assert.doesNotMatch(ass, /Dialogue: 0[^\n]*普通/);
   assert.match(fs.readFileSync(path.join(tempDir, "render-filter.txt"), "utf8"), /ass=filename='render-overlays\.ass'/);
 
   const before = brightPixels(outputPath, 0.2);
-  const duringList = brightPixels(outputPath, 0.7);
-  const during = brightPixels(outputPath, 1.0);
-  assert.ok(duringList > before + 20, `清单期间亮像素没有显著增加 before=${before} duringList=${duringList}`);
+  const duringKeywords = brightPixels(outputPath, 0.7);
+  const during = brightPixels(outputPath, 1.7);
+  assert.ok(duringKeywords > before + 20, `关键词期间亮像素没有显著增加 before=${before} duringKeywords=${duringKeywords}`);
   assert.ok(during > before + 20, `字幕期间亮像素没有显著增加 before=${before} during=${during}`);
   passed = true;
   process.stdout.write(`wanggan subtitle render passed before=${before} during=${during}\n`);

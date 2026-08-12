@@ -9,6 +9,18 @@ import {
   writeJson,
 } from "./core.mjs";
 
+export const CAPTION_FONT_FAMILIES = Object.freeze({
+  DEFAULT: "Microsoft YaHei",
+  SONG: "华文中宋",
+});
+
+const SUPPORTED_FONT_FAMILIES = new Set(Object.values(CAPTION_FONT_FAMILIES));
+const FONT_FAMILY_ALIASES = new Map([
+  ["Noto Sans SC", CAPTION_FONT_FAMILIES.DEFAULT],
+  ["Microsoft YaHei UI", CAPTION_FONT_FAMILIES.DEFAULT],
+  ["STZhongsong", CAPTION_FONT_FAMILIES.SONG],
+]);
+
 const DEFAULT_CAPTIONS = Object.freeze({
   enabled: false,
   coordinate_space: "screen",
@@ -20,13 +32,15 @@ const DEFAULT_CAPTIONS = Object.freeze({
     unit: "ratio",
   }),
   style: Object.freeze({
-    font_family: "Noto Sans SC",
+    font_family: CAPTION_FONT_FAMILIES.DEFAULT,
     font_size_ratio: 0.06,
     color: "#FFFFFF",
     stroke_color: "#000000",
     stroke_width_ratio: 0.0055,
     align: "center",
   }),
+  cue_fonts: Object.freeze({}),
+  cue_font_size_ratios: Object.freeze({}),
 });
 
 const DEFAULT_PROGRESSIVE_LIST = Object.freeze({
@@ -40,7 +54,7 @@ const DEFAULT_PROGRESSIVE_LIST = Object.freeze({
     unit: "ratio",
   }),
   style: Object.freeze({
-    font_family: "Noto Sans SC",
+    font_family: CAPTION_FONT_FAMILIES.DEFAULT,
     font_size_ratio: 0.045,
     color: "#FFFFFF",
     stroke_color: "#000000",
@@ -50,11 +64,36 @@ const DEFAULT_PROGRESSIVE_LIST = Object.freeze({
   }),
 });
 
+const DEFAULT_PROGRESSIVE_KEYWORDS = Object.freeze({
+  enabled: true,
+  coordinate_space: "screen",
+  box: Object.freeze({
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+    unit: "ratio",
+  }),
+  style: Object.freeze({
+    font_family: DEFAULT_CAPTIONS.style.font_family,
+    font_size_ratio: DEFAULT_CAPTIONS.style.font_size_ratio * effectDefinition("large_bright").fontScale,
+    color: effectDefinition("large_bright").color,
+    stroke_color: DEFAULT_CAPTIONS.style.stroke_color,
+    stroke_width_ratio: DEFAULT_CAPTIONS.style.stroke_width_ratio,
+    item_gap_ratio: 0,
+    align: "center",
+  }),
+});
+
+const ENTER_ANIMATIONS = Object.freeze(["none", "pop"]);
+
 function cloneDefaultCaptions() {
   return {
     ...DEFAULT_CAPTIONS,
     box: { ...DEFAULT_CAPTIONS.box },
     style: { ...DEFAULT_CAPTIONS.style },
+    cue_fonts: { ...DEFAULT_CAPTIONS.cue_fonts },
+    cue_font_size_ratios: { ...DEFAULT_CAPTIONS.cue_font_size_ratios },
   };
 }
 
@@ -63,6 +102,14 @@ function cloneDefaultProgressiveList() {
     ...DEFAULT_PROGRESSIVE_LIST,
     box: { ...DEFAULT_PROGRESSIVE_LIST.box },
     style: { ...DEFAULT_PROGRESSIVE_LIST.style },
+  };
+}
+
+function cloneDefaultProgressiveKeywords() {
+  return {
+    ...DEFAULT_PROGRESSIVE_KEYWORDS,
+    box: { ...DEFAULT_PROGRESSIVE_KEYWORDS.box },
+    style: { ...DEFAULT_PROGRESSIVE_KEYWORDS.style },
   };
 }
 
@@ -92,6 +139,51 @@ function color(value, fallback, label) {
   return text;
 }
 
+export function normalizedFontFamily(value, fallback = CAPTION_FONT_FAMILIES.DEFAULT) {
+  const requested = String(value ?? fallback).trim() || fallback;
+  const normalized = FONT_FAMILY_ALIASES.get(requested) || requested;
+  if (!SUPPORTED_FONT_FAMILIES.has(normalized)) {
+    throw new WangganError("字体只支持默认粗黑体或华文中宋", {
+      value,
+      allowed: [...SUPPORTED_FONT_FAMILIES],
+    });
+  }
+  return normalized;
+}
+
+function normalizedCueFonts(value) {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new WangganError("字幕 cue_fonts 必须是对象", { value });
+  }
+  const result = {};
+  for (const [cueId, fontFamily] of Object.entries(value)) {
+    if (!/^caption-\d{3,}$/.test(cueId)) {
+      throw new WangganError("字幕字体覆盖的 cue id 无效", { cueId });
+    }
+    result[cueId] = normalizedFontFamily(fontFamily);
+  }
+  return result;
+}
+
+function normalizedCueFontSizeRatios(value) {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new WangganError("字幕 cue_font_size_ratios 必须是对象", { value });
+  }
+  const result = {};
+  for (const [cueId, fontSizeRatio] of Object.entries(value)) {
+    if (!/^caption-\d{3,}$/.test(cueId)) {
+      throw new WangganError("字幕字号覆盖的 cue id 无效", { cueId });
+    }
+    result[cueId] = finiteRatio(fontSizeRatio, DEFAULT_CAPTIONS.style.font_size_ratio, "单条字幕字号比例", {
+      minimum: 0.015,
+      maximum: 0.15,
+    });
+  }
+  return result;
+}
+
 function normalizedDisplayText(value, fallback, label) {
   const text = String(value ?? fallback)
     .replace(/[\r\n]+/g, " ")
@@ -108,42 +200,110 @@ function normalizedSource(value) {
   return value === "human" ? "human" : "ai";
 }
 
+function normalizedEnterAnimation(value, fallback) {
+  const animation = String(value ?? fallback).trim();
+  if (!ENTER_ANIMATIONS.includes(animation)) {
+    throw new WangganError("入场动画只支持 none 或 pop", {
+      enter_animation: value ?? null,
+      allowed: ENTER_ANIMATIONS,
+    });
+  }
+  return animation;
+}
+
+function normalizedOverlayBox(input, fallback, label, options = {}) {
+  const boxInput = input || {};
+  const box = {
+    x: finiteRatio(boxInput.x, fallback.x, `${label} x`),
+    y: finiteRatio(boxInput.y, fallback.y, `${label} y`),
+    width: finiteRatio(boxInput.width, fallback.width, `${label} width`, {
+      minimum: options.minimumWidth ?? 0.05,
+    }),
+    height: finiteRatio(boxInput.height, fallback.height, `${label} height`, {
+      minimum: options.minimumHeight ?? 0.05,
+    }),
+    unit: "ratio",
+  };
+  if (box.x + box.width > 1.000001 || box.y + box.height > 1.000001) {
+    throw new WangganError(`${label}不能超出视频画面`, { box });
+  }
+  return box;
+}
+
+function autoKeywordBoxes(itemCount) {
+  const keywordBoxHeight = 0.055;
+  const centeredBox = (centerX, centerY, width) => ({
+    x: Number((centerX - width / 2).toFixed(6)),
+    y: Number((centerY - keywordBoxHeight / 2).toFixed(6)),
+    width,
+    height: keywordBoxHeight,
+  });
+  const emphasisLineY = 1 / 6;
+  const layouts = {
+    1: [
+      centeredBox(1 / 2, emphasisLineY, 0.36),
+    ],
+    2: [
+      centeredBox(1 / 3, emphasisLineY, 0.28),
+      centeredBox(2 / 3, emphasisLineY, 0.28),
+    ],
+    3: [
+      centeredBox(1 / 4, emphasisLineY, 0.24),
+      centeredBox(2 / 4, emphasisLineY, 0.24),
+      centeredBox(3 / 4, emphasisLineY, 0.24),
+    ],
+    4: [
+      centeredBox(1 / 3, emphasisLineY, 0.28),
+      centeredBox(2 / 3, emphasisLineY, 0.28),
+      centeredBox(1 / 3, emphasisLineY + keywordBoxHeight * 2, 0.28),
+      centeredBox(2 / 3, emphasisLineY + keywordBoxHeight * 2, 0.28),
+    ],
+  };
+  return layouts[itemCount].map((box) => ({ ...box, unit: "ratio" }));
+}
+
 function validateProgressiveList(input, overlayIndex, words) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new WangganError(`第 ${overlayIndex + 1} 个定时覆盖层必须是对象`);
   }
-  if (input.type !== "progressive_list") {
+  if (!["progressive_list", "progressive_keywords"].includes(input.type)) {
     throw new WangganError("不支持的定时覆盖层类型", {
       type: input.type ?? null,
-      allowed: ["progressive_list"],
+      allowed: ["progressive_list", "progressive_keywords"],
     });
   }
+  const isKeywords = input.type === "progressive_keywords";
   if (!Array.isArray(words) || words.length === 0) {
     throw new WangganError("校验定时覆盖层时必须提供逐字稿");
   }
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new WangganError("清单至少需要一个条目", { overlayIndex });
   }
-  if (input.items.length > 8) {
-    throw new WangganError("单个清单最多支持 8 个条目", { overlayIndex, itemCount: input.items.length });
+  const maximumItems = isKeywords ? 4 : 8;
+  if (input.items.length > maximumItems) {
+    throw new WangganError(
+      isKeywords ? "关键词散布最多支持 4 个条目" : "单个清单最多支持 8 个条目",
+      { overlayIndex, itemCount: input.items.length },
+    );
   }
 
-  const defaults = cloneDefaultProgressiveList();
-  const boxInput = input.box || {};
+  const defaults = isKeywords ? cloneDefaultProgressiveKeywords() : cloneDefaultProgressiveList();
   const styleInput = input.style || {};
-  const box = {
-    x: finiteRatio(boxInput.x, defaults.box.x, "清单 x"),
-    y: finiteRatio(boxInput.y, defaults.box.y, "清单 y"),
-    width: finiteRatio(boxInput.width, defaults.box.width, "清单 width", { minimum: 0.05 }),
-    height: finiteRatio(boxInput.height, defaults.box.height, "清单 height", { minimum: 0.05 }),
-    unit: "ratio",
-  };
-  if (box.x + box.width > 1.000001 || box.y + box.height > 1.000001) {
-    throw new WangganError("清单区域不能超出视频画面", { box });
+  const box = isKeywords
+    ? { ...defaults.box }
+    : normalizedOverlayBox(input.box, defaults.box, "清单区域");
+  if (isKeywords && input.layout !== undefined && !["auto", "custom"].includes(input.layout)) {
+    throw new WangganError("关键词布局只支持 auto 或 custom", {
+      layout: input.layout,
+      allowed: ["auto", "custom"],
+    });
   }
+  const layout = isKeywords && input.layout === "custom" ? "custom" : "auto";
+  const autoBoxes = isKeywords ? autoKeywordBoxes(input.items.length) : [];
 
-  const overlayId = String(input.id || `overlay-list-${String(overlayIndex + 1).padStart(3, "0")}`).trim();
-  if (!overlayId) throw new WangganError("清单 id 不能为空", { overlayIndex });
+  const idPrefix = isKeywords ? "overlay-keywords" : "overlay-list";
+  const overlayId = String(input.id || `${idPrefix}-${String(overlayIndex + 1).padStart(3, "0")}`).trim();
+  if (!overlayId) throw new WangganError("定时覆盖层 id 不能为空", { overlayIndex });
   const items = input.items.map((item, itemIndex) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new WangganError(`清单 ${overlayId} 的第 ${itemIndex + 1} 个条目必须是对象`);
@@ -167,15 +327,36 @@ function validateProgressiveList(input, overlayIndex, words) {
     }
     const selectedWords = words.slice(startWordIndex, endWordIndex + 1);
     const sourceText = selectedWords.map((word) => word.text).join("");
-    return {
+    const displayText = normalizedDisplayText(item.display_text, sourceText, "清单显示文字");
+    if (isKeywords) {
+      const characterCount = Array.from(displayText.replace(/\s/g, "")).length;
+      if (characterCount < 2 || characterCount > 3) {
+        throw new WangganError("关键词屏幕文案必须是 2 到 3 个字符", {
+          overlayId,
+          itemIndex,
+          display_text: displayText,
+          characterCount,
+        });
+      }
+    }
+    const normalizedItem = {
       id: String(item.id || `${overlayId}-item-${String(itemIndex + 1).padStart(3, "0")}`).trim(),
       start_word_index: startWordIndex,
       end_word_index: endWordIndex,
       start: selectedWords[0].start,
       end: selectedWords.at(-1).end,
       source_text: sourceText,
-      display_text: normalizedDisplayText(item.display_text, sourceText, "清单显示文字"),
+      display_text: displayText,
     };
+    if (isKeywords) {
+      normalizedItem.box = layout === "auto"
+        ? autoBoxes[itemIndex]
+        : normalizedOverlayBox(item.box, autoBoxes[itemIndex], `关键词 ${itemIndex + 1} 区域`, {
+          minimumWidth: 0.10,
+          minimumHeight: 0.01,
+        });
+    }
+    return normalizedItem;
   });
 
   const itemIds = new Set();
@@ -196,21 +377,23 @@ function validateProgressiveList(input, overlayIndex, words) {
 
   return {
     id: overlayId,
-    type: "progressive_list",
+    type: input.type,
     enabled: input.enabled === undefined ? defaults.enabled : Boolean(input.enabled),
     coordinate_space: "screen",
     box,
+    ...(isKeywords ? { layout } : {}),
+    enter_animation: normalizedEnterAnimation(input.enter_animation, isKeywords ? "pop" : "none"),
     style: {
-      font_family: String(styleInput.font_family || defaults.style.font_family)
-        .replace(/[\r\n,]/g, " ")
-        .trim() || defaults.style.font_family,
+      font_family: normalizedFontFamily(styleInput.font_family, defaults.style.font_family),
       font_size_ratio: finiteRatio(
         styleInput.font_size_ratio,
         defaults.style.font_size_ratio,
-        "清单字号比例",
+        isKeywords ? "关键词字号比例" : "清单字号比例",
         { minimum: 0.015, maximum: 0.12 },
       ),
-      color: color(styleInput.color, defaults.style.color, "清单颜色"),
+      color: isKeywords
+        ? defaults.style.color
+        : color(styleInput.color, defaults.style.color, "清单颜色"),
       stroke_color: color(styleInput.stroke_color, defaults.style.stroke_color, "清单描边颜色"),
       stroke_width_ratio: finiteRatio(
         styleInput.stroke_width_ratio,
@@ -224,7 +407,7 @@ function validateProgressiveList(input, overlayIndex, words) {
         "清单条目间距比例",
         { minimum: 0, maximum: 0.08 },
       ),
-      align: "left",
+      align: isKeywords ? "center" : "left",
     },
     items,
     start: items[0].start,
@@ -286,9 +469,7 @@ export function validateOverlays(value, options = {}) {
       coordinate_space: "screen",
       box: normalizedBox,
       style: {
-        font_family: String(style.font_family || defaults.style.font_family)
-          .replace(/[\r\n,]/g, " ")
-          .trim() || defaults.style.font_family,
+        font_family: normalizedFontFamily(style.font_family, defaults.style.font_family),
         font_size_ratio: finiteRatio(
           style.font_size_ratio,
           defaults.style.font_size_ratio,
@@ -305,6 +486,8 @@ export function validateOverlays(value, options = {}) {
         ),
         align: "center",
       },
+      cue_fonts: normalizedCueFonts(input.cue_fonts),
+      cue_font_size_ratios: normalizedCueFontSizeRatios(input.cue_font_size_ratios),
     },
     timed_overlays: timedOverlays,
   };
@@ -480,8 +663,37 @@ export function compileStructuredOverlayTrack(project, words, overlaysInput) {
     const strokeWidth = Math.max(1, Math.round(minDimension * overlay.style.stroke_width_ratio));
     const itemGap = Math.round(project.displayHeight * overlay.style.item_gap_ratio);
     const lineHeight = Math.max(fontSize, Math.round(fontSize * 1.25));
+    if (overlay.type === "progressive_keywords") {
+      const items = overlay.items.map((item, itemIndex) => {
+        const boxWidth = project.displayWidth * item.box.width;
+        const maxChars = Math.max(2, Math.floor(boxWidth / fontSize));
+        const lines = [item.display_text];
+        const requiredHeight = lines.length * lineHeight;
+        const fittedHeight = Math.min(1, requiredHeight / project.displayHeight);
+        const centerY = item.box.y + item.box.height / 2;
+        const fittedY = Math.max(0, Math.min(1 - fittedHeight, centerY - fittedHeight / 2));
+        return {
+          ...item,
+          box: {
+            ...item.box,
+            y: Number(fittedY.toFixed(6)),
+            height: Number(fittedHeight.toFixed(6)),
+          },
+          lines,
+          maxChars,
+          requiredHeight,
+        };
+      });
+      return {
+        ...overlay,
+        items,
+        fontSize,
+        strokeWidth,
+        itemGap: 0,
+        lineHeight,
+      };
+    }
     const boxWidth = project.displayWidth * overlay.box.width;
-    const boxHeight = project.displayHeight * overlay.box.height;
     const maxChars = Math.max(6, Math.floor(boxWidth / fontSize));
     const items = overlay.items.map((item) => ({
       ...item,
@@ -489,21 +701,22 @@ export function compileStructuredOverlayTrack(project, words, overlaysInput) {
     }));
     const lineCount = items.reduce((total, item) => total + item.lines.length, 0);
     const requiredHeight = lineCount * lineHeight + Math.max(0, items.length - 1) * itemGap;
-    if (requiredHeight > boxHeight + 1) {
-      throw new WangganError("清单内容超出清单区域高度，请放大区域或缩短文字", {
-        overlayId: overlay.id,
-        requiredHeight,
-        availableHeight: boxHeight,
-      });
-    }
+    const fittedHeight = Math.min(1, requiredHeight / project.displayHeight);
+    const fittedBox = {
+      ...overlay.box,
+      y: Number(Math.max(0, Math.min(1 - fittedHeight, overlay.box.y)).toFixed(6)),
+      height: Number(fittedHeight.toFixed(6)),
+    };
     return {
       ...overlay,
+      box: fittedBox,
       items,
       fontSize,
       strokeWidth,
       itemGap,
       lineHeight,
       maxChars,
+      requiredHeight,
     };
   });
 
@@ -513,12 +726,17 @@ export function compileStructuredOverlayTrack(project, words, overlaysInput) {
     if (!group.enabled) continue;
     for (let index = 0; index < group.items.length; index += 1) {
       const item = group.items[index];
+      const stateEnd = index + 1 < group.items.length ? group.items[index + 1].start : group.end;
       states.push({
         id: `${group.id}-state-${String(index + 1).padStart(3, "0")}`,
         overlay_id: group.id,
         type: group.type,
+        layout: group.layout || null,
+        enter_animation: group.enter_animation,
+        entering_item_id: item.id,
+        animation_duration: Math.max(0.001, Math.min(0.18, stateEnd - item.start)),
         start: item.start,
-        end: index + 1 < group.items.length ? group.items[index + 1].start : group.end,
+        end: stateEnd,
         box: group.box,
         style: group.style,
         fontSize: group.fontSize,
@@ -641,6 +859,7 @@ function suppressCaptionCues(cues, words, suppressionRanges) {
       output.push({
         ...cue,
         id: `${cue.id}-part-${String(output.length + 1).padStart(3, "0")}`,
+        source_cue_id: cue.source_cue_id || cue.id,
         start: roundTime(interval.start),
         end: roundTime(interval.end),
         text,
@@ -907,10 +1126,19 @@ export function compileCaptionTrack(project, words, overlaysInput, effects = [],
     maxWidth,
     effectCount: captionEffects.length,
     cues: visibleCues.map((cue) => {
-      const layout = styledCaptionLayout(cue, words, captionEffects, maxWidth);
+      const sourceCueId = cue.source_cue_id || cue.id;
+      const cueFontSizeRatio = overlays.captions.cue_font_size_ratios[sourceCueId]
+        || overlays.captions.style.font_size_ratio;
+      const cueBaseFontSize = Math.max(12, Math.round(minDimension * cueFontSizeRatio));
+      const cueMaxWidth = Math.max(6, boxWidth / cueBaseFontSize);
+      const layout = styledCaptionLayout(cue, words, captionEffects, cueMaxWidth);
       const styledLines = layout.lines;
       return {
         ...cue,
+        source_cue_id: sourceCueId,
+        font_family: overlays.captions.cue_fonts[sourceCueId] || overlays.captions.style.font_family,
+        font_size_ratio: cueFontSizeRatio,
+        font_size: cueBaseFontSize,
         layout_font_scale: layout.fontScale,
         lines: styledLines.map((line) => line.map((segment) => segment.text).join("")),
         styledLines,
@@ -981,7 +1209,7 @@ export function buildAss(project, captionTrack, structuredTrack = { states: [] }
   ];
   const captionEvents = captionTrack.enabled ? captionTrack.cues.map((cue) => {
     const layoutFontScale = Number(cue.layout_font_scale) || 1;
-    const cueFontSize = Math.max(1, Math.round(captionTrack.fontSize * layoutFontScale));
+    const cueFontSize = Math.max(1, Math.round((cue.font_size || captionTrack.fontSize) * layoutFontScale));
     const text = (cue.styledLines || cue.lines.map((line) => [{ text: line, style: null }]))
       .map((line) => line.map((segment) => {
         const escaped = escapeAssText(segment.text);
@@ -990,13 +1218,40 @@ export function buildAss(project, captionTrack, structuredTrack = { states: [] }
         return `{\\fs${emphasizedFontSize}\\c${assColor(segment.style.color)}}${escaped}{\\fs${cueFontSize}\\c${assColor(style.color)}}`;
       }).join(""))
       .join("\\N");
-    return `Dialogue: 0,${assTime(cue.start)},${assTime(cue.end)},Default,,0,0,0,,{\\an2\\pos(${centerX},${bottomY})\\fs${cueFontSize}}${text}`;
+    const cueFontName = String(cue.font_family || style.font_family).replace(/[,{}\\]/g, " ");
+    return `Dialogue: 0,${assTime(cue.start)},${assTime(cue.end)},Default,,0,0,0,,{\\an2\\pos(${centerX},${bottomY})\\fn${cueFontName}\\fs${cueFontSize}}${text}`;
   }) : [];
   const structuredEvents = (structuredTrack.states || []).flatMap((state) => {
     const events = [];
+    const styleFontName = String(state.style.font_family).replace(/[,{}\\]/g, " ");
+    const animationDuration = Math.max(1, Math.round(Number(state.animation_duration || 0.18) * 1000));
+    const animationTags = (item) => (
+      state.enter_animation === "pop" && item.id === state.entering_item_id
+        ? `\\fad(${animationDuration},0)\\fscx85\\fscy85\\t(0,${animationDuration},\\fscx100\\fscy100)`
+        : ""
+    );
+    if (state.type === "progressive_keywords") {
+      for (const item of state.items) {
+        const centerX = Math.round(project.displayWidth * (item.box.x + item.box.width / 2));
+        const centerY = Math.round(project.displayHeight * (item.box.y + item.box.height / 2));
+        const tags = [
+          "\\an5",
+          `\\pos(${centerX},${centerY})`,
+          `\\fn${styleFontName}`,
+          `\\fs${state.fontSize}`,
+          `\\c${assColor(state.style.color)}`,
+          `\\3c${assColor(state.style.stroke_color)}`,
+          `\\bord${state.strokeWidth}`,
+          animationTags(item),
+        ].join("");
+        events.push(
+          `Dialogue: 10,${assTime(state.start)},${assTime(state.end)},Default,,0,0,0,,{${tags}}${item.lines.map(escapeAssText).join("\\N")}`,
+        );
+      }
+      return events;
+    }
     const leftX = Math.round(project.displayWidth * state.box.x);
     let topY = Math.round(project.displayHeight * state.box.y);
-    const styleFontName = String(state.style.font_family).replace(/[,{}\\]/g, " ");
     for (const item of state.items) {
       for (const line of item.lines) {
         const tags = [
@@ -1007,6 +1262,7 @@ export function buildAss(project, captionTrack, structuredTrack = { states: [] }
           `\\c${assColor(state.style.color)}`,
           `\\3c${assColor(state.style.stroke_color)}`,
           `\\bord${state.strokeWidth}`,
+          animationTags(item),
         ].join("");
         events.push(
           `Dialogue: 10,${assTime(state.start)},${assTime(state.end)},Default,,0,0,0,,{${tags}}${escapeAssText(line)}`,

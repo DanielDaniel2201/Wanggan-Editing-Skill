@@ -6,7 +6,6 @@ const elements = {
   previewCanvas: document.querySelector("#previewCanvas"),
   structuredOverlay: document.querySelector("#structuredOverlay"),
   structuredList: document.querySelector("#structuredList"),
-  structuredResizeHandle: document.querySelector("#structuredResizeHandle"),
   subtitleOverlay: document.querySelector("#subtitleOverlay"),
   subtitleText: document.querySelector("#subtitleText"),
   subtitleResizeHandle: document.querySelector("#subtitleResizeHandle"),
@@ -21,8 +20,12 @@ const elements = {
   playerTime: document.querySelector("#playerTime"),
   playerControls: document.querySelector("#playerControls"),
   subtitleToggleButton: document.querySelector("#subtitleToggleButton"),
+  fontActions: document.querySelector("#fontActions"),
+  fontTargetLabel: document.querySelector("#fontTargetLabel"),
+  fontFamilySelect: document.querySelector("#fontFamilySelect"),
   structuredEditor: document.querySelector("#structuredEditor"),
   newListButton: document.querySelector("#newListButton"),
+  newKeywordsButton: document.querySelector("#newKeywordsButton"),
   saveProjectButton: document.querySelector("#saveProjectButton"),
   renderButton: document.querySelector("#renderButton"),
 };
@@ -34,7 +37,7 @@ let playbackEffects = [];
 let playbackCaptions = [];
 let playbackOverlays = [];
 let renderEngineCompatible = false;
-const requiredRenderEngineVersion = 9;
+const requiredRenderEngineVersion = 16;
 const selectedWords = new Set();
 let dragging = false;
 let paintShouldSelect = true;
@@ -51,13 +54,23 @@ let saveButtonResetTimer = null;
 let captionBoxSelected = false;
 let captionInteraction = null;
 let structuredBoxSelected = false;
+let structuredSelectedItemId = null;
 let structuredInteraction = null;
+let selectedTextTarget = null;
 
 async function requestJson(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      signal: options.signal || AbortSignal.timeout(8000),
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    });
+  } catch (error) {
+    const unavailable = new Error("后台服务已断开，请重新启动工作台");
+    unavailable.cause = error;
+    throw unavailable;
+  }
   const value = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(value.error || `请求失败 ${response.status}`);
@@ -65,6 +78,16 @@ async function requestJson(url, options = {}) {
     throw error;
   }
   return value;
+}
+
+function markServiceDisconnected() {
+  renderEngineCompatible = false;
+  setConnection("后台服务已断开", "error");
+  setSaveStatus("后台服务已断开，请重新启动工作台", true);
+  renderControls();
+  renderCaptionControls();
+  renderRenderStatus();
+  renderProjectSaveButton();
 }
 
 function setConnection(text, kind = "muted") {
@@ -203,7 +226,7 @@ function renderTranscriptClasses() {
     button.title = [
       videoEffect?.effect_type,
       captionEffect?.effect_type,
-      structuredItem ? "progressive_list" : null,
+      structuredItem?.group?.type,
     ].filter(Boolean).join(" + ");
   }
 }
@@ -219,6 +242,8 @@ function renderControls() {
     button.setAttribute("aria-pressed", String(selected));
   }
   elements.newListButton.disabled = !range?.contiguous || savingOverlays;
+  elements.newKeywordsButton.disabled = !range?.contiguous || savingOverlays;
+  renderFontControls();
 }
 
 function renderProject() {
@@ -257,12 +282,115 @@ function renderCaptionControls() {
   elements.subtitleToggleButton.setAttribute("aria-pressed", String(enabled));
 }
 
+function captionSourceCueId(caption) {
+  return caption?.source_cue_id || String(caption?.id || "").replace(/-part-\d+$/, "");
+}
+
+function selectCaptionText(caption) {
+  const cueId = captionSourceCueId(caption);
+  if (!cueId) return;
+  selectedTextTarget = { kind: "caption", cueId };
+  structuredBoxSelected = false;
+  structuredSelectedItemId = null;
+  renderStructuredSelection();
+  renderFontControls();
+}
+
+function selectStructuredText(groupId) {
+  if (!groupId) return;
+  selectedTextTarget = { kind: "overlay", groupId };
+  captionBoxSelected = false;
+  renderCaptionSelection();
+  renderFontControls();
+}
+
+function clearSelectedTextTarget(kind = null) {
+  if (!selectedTextTarget || (kind && selectedTextTarget.kind !== kind)) return;
+  selectedTextTarget = null;
+  renderFontControls();
+}
+
+function selectedTextFont() {
+  if (selectedTextTarget?.kind === "caption") {
+    return state?.overlays?.captions?.cue_fonts?.[selectedTextTarget.cueId]
+      || state?.captionTrack?.style?.font_family
+      || "Microsoft YaHei";
+  }
+  if (selectedTextTarget?.kind === "overlay") {
+    return structuredGroupById(selectedTextTarget.groupId)?.style?.font_family || "Microsoft YaHei";
+  }
+  return "Microsoft YaHei";
+}
+
+function selectedTextLabel() {
+  if (selectedTextTarget?.kind === "caption") {
+    const number = Number(String(selectedTextTarget.cueId).match(/\d+/)?.[0]);
+    return Number.isFinite(number) ? `字幕 ${number}` : "当前字幕";
+  }
+  if (selectedTextTarget?.kind === "overlay") {
+    const groups = state?.structuredOverlayTrack?.groups || [];
+    const index = groups.findIndex((group) => group.id === selectedTextTarget.groupId);
+    const group = groups[index];
+    if (!group) return "点击画面文字";
+    return `${group.type === "progressive_keywords" ? "关键词" : "清单"} ${index + 1}`;
+  }
+  return "点击画面文字";
+}
+
+function renderFontControls() {
+  const hasTarget = Boolean(selectedTextTarget);
+  elements.fontTargetLabel.textContent = selectedTextLabel();
+  elements.fontFamilySelect.value = selectedTextFont();
+  elements.fontFamilySelect.disabled = !hasTarget
+    || !renderEngineCompatible
+    || savingCaptions
+    || savingOverlays;
+}
+
+async function saveCaptionFont(cueId, fontFamily) {
+  if (!renderEngineCompatible || savingCaptions) return;
+  try {
+    savingCaptions = true;
+    renderControls();
+    setSaveStatus("正在保存当前字幕字体");
+    await requestJson("/api/overlays/captions", {
+      method: "PATCH",
+      body: JSON.stringify({ cue_id: cueId, font_family: fontFamily }),
+    });
+    await loadState();
+    setSaveStatus("当前字幕字体已保存并热重载");
+  } catch (error) {
+    setSaveStatus(error.message, true);
+  } finally {
+    savingCaptions = false;
+    renderControls();
+  }
+}
+
+function saveSelectedFont(fontFamily) {
+  if (selectedTextTarget?.kind === "caption") {
+    void saveCaptionFont(selectedTextTarget.cueId, fontFamily);
+    return;
+  }
+  if (selectedTextTarget?.kind === "overlay") {
+    const group = structuredGroupById(selectedTextTarget.groupId);
+    if (!group) return;
+    const next = updatedGroup(currentOverlayGroups(), group.id, (candidate) => ({
+      ...candidate,
+      style: { ...candidate.style, font_family: fontFamily },
+      human_modified: true,
+    }));
+    void saveOverlayGroups(next, `${group.type === "progressive_keywords" ? "关键词" : "清单"}字体已保存并热重载`);
+  }
+}
+
 function overlayItemInput(item, overrides = {}) {
   return {
     id: item.id,
     start_word_index: item.start_word_index,
     end_word_index: item.end_word_index,
     display_text: item.display_text,
+    ...(item.box ? { box: { ...item.box } } : {}),
     ...overrides,
   };
 }
@@ -270,10 +398,12 @@ function overlayItemInput(item, overrides = {}) {
 function overlayGroupInput(group, overrides = {}) {
   return {
     id: group.id,
-    type: "progressive_list",
+    type: group.type,
     enabled: group.enabled,
     coordinate_space: "screen",
     box: { ...group.box },
+    ...(group.layout ? { layout: group.layout } : {}),
+    enter_animation: group.enter_animation || "none",
     style: { ...group.style },
     items: group.items.map((item) => overlayItemInput(item)),
     source: group.source,
@@ -291,7 +421,7 @@ async function saveOverlayGroups(groups, successMessage) {
   try {
     savingOverlays = true;
     renderControls();
-    setSaveStatus("正在保存清单");
+    setSaveStatus("正在保存结构化文字");
     await requestJson("/api/overlays", {
       method: "PUT",
       body: JSON.stringify({
@@ -301,7 +431,7 @@ async function saveOverlayGroups(groups, successMessage) {
       }),
     });
     await loadState();
-    setSaveStatus(successMessage || "清单已保存并热重载");
+    setSaveStatus(successMessage || "结构化文字已保存并热重载");
   } catch (error) {
     setSaveStatus(`${error.message}${error.details ? `　${JSON.stringify(error.details)}` : ""}`, true);
   } finally {
@@ -311,7 +441,7 @@ async function saveOverlayGroups(groups, successMessage) {
   }
 }
 
-function createListFromSelection() {
+function createStructuredGroupFromSelection(type) {
   const range = selectionInfo();
   if (!range?.contiguous) {
     setSaveStatus("请先选择一段连续逐字稿", true);
@@ -322,10 +452,17 @@ function createListFromSelection() {
     .map((word) => word.text)
     .join("");
   const groups = currentOverlayGroups();
+  const isKeywords = type === "progressive_keywords";
+  const keywordCharacterCount = Array.from(displayText.replace(/\s/g, "")).length;
+  if (isKeywords && (keywordCharacterCount < 2 || keywordCharacterCount > 3)) {
+    setSaveStatus("关键词屏幕文案必须是 2 到 3 个字符", true);
+    return;
+  }
   groups.push({
-    id: `overlay-list-${Date.now()}`,
-    type: "progressive_list",
+    id: `${isKeywords ? "overlay-keywords" : "overlay-list"}-${Date.now()}`,
+    type,
     enabled: true,
+    ...(isKeywords ? { layout: "auto", enter_animation: "pop" } : { enter_animation: "none" }),
     items: [{
       start_word_index: range.start,
       end_word_index: range.end,
@@ -334,7 +471,15 @@ function createListFromSelection() {
     source: "human",
     human_modified: false,
   });
-  void saveOverlayGroups(groups, "新清单已创建");
+  void saveOverlayGroups(groups, isKeywords ? "新关键词组已创建" : "新清单已创建");
+}
+
+function createListFromSelection() {
+  createStructuredGroupFromSelection("progressive_list");
+}
+
+function createKeywordsFromSelection() {
+  createStructuredGroupFromSelection("progressive_keywords");
 }
 
 function compactButton(label, className, action) {
@@ -346,6 +491,23 @@ function compactButton(label, className, action) {
   button.disabled = savingOverlays;
   button.addEventListener("click", action);
   return button;
+}
+
+function compactSelect(value, options, label, action) {
+  const select = document.createElement("select");
+  select.className = "structured-select";
+  select.dataset.structuredAction = "";
+  select.setAttribute("aria-label", label);
+  select.disabled = savingOverlays;
+  for (const optionInput of options) {
+    const option = document.createElement("option");
+    option.value = optionInput.value;
+    option.textContent = optionInput.label;
+    option.selected = option.value === value;
+    select.append(option);
+  }
+  select.addEventListener("change", () => action(select.value));
+  return select;
 }
 
 function selectStructuredItem(item) {
@@ -371,19 +533,21 @@ function renderStructuredEditor() {
   if (!groups.length) {
     const empty = document.createElement("p");
     empty.className = "structured-editor__empty";
-    empty.textContent = "当前没有清单，选择连续文字后点击新建";
+    empty.textContent = "当前没有结构化文字，选择连续文字后新建清单或关键词";
     elements.structuredEditor.append(empty);
     return;
   }
 
   groups.forEach((group, groupIndex) => {
+    const isKeywords = group.type === "progressive_keywords";
+    const kindLabel = isKeywords ? "关键词" : "清单";
     const section = document.createElement("section");
     section.className = "structured-group";
     const heading = document.createElement("div");
     heading.className = "structured-group__heading";
     const title = document.createElement("span");
     title.className = "structured-group__title";
-    title.textContent = `清单 ${groupIndex + 1}`;
+    title.textContent = `${kindLabel} ${groupIndex + 1}`;
     const headingActions = document.createElement("div");
     headingActions.className = "structured-group__actions";
     headingActions.append(
@@ -393,18 +557,50 @@ function renderStructuredEditor() {
           enabled: !candidate.enabled,
           human_modified: true,
         }));
-        void saveOverlayGroups(next, group.enabled ? "清单已撤下" : "清单已启用");
+        void saveOverlayGroups(next, group.enabled ? `${kindLabel}已撤下` : `${kindLabel}已启用`);
       }),
       compactButton("删除", "compact-button--danger", () => {
-        if (!window.confirm("确认删除整组清单吗")) return;
+        if (!window.confirm(`确认删除整组${kindLabel}吗`)) return;
         void saveOverlayGroups(
           currentOverlayGroups().filter((candidate) => candidate.id !== group.id),
-          "清单已删除",
+          `${kindLabel}已删除`,
         );
       }),
     );
     heading.append(title, headingActions);
     section.append(heading);
+
+    const settings = document.createElement("div");
+    settings.className = "structured-group__settings";
+    settings.append(compactSelect(
+      group.enter_animation || "none",
+      [
+        { value: "none", label: "直接出现" },
+        { value: "pop", label: "轻微弹出" },
+      ],
+      `${kindLabel}入场动画`,
+      (enterAnimation) => {
+        const next = updatedGroup(currentOverlayGroups(), group.id, (candidate) => ({
+          ...candidate,
+          enter_animation: enterAnimation,
+          human_modified: true,
+        }));
+        void saveOverlayGroups(next, `${kindLabel}动画已保存`);
+      },
+    ));
+    if (isKeywords) {
+      const autoLayoutButton = compactButton("恢复自动布局", "", () => {
+        const next = updatedGroup(currentOverlayGroups(), group.id, (candidate) => ({
+          ...candidate,
+          layout: "auto",
+          human_modified: true,
+        }));
+        void saveOverlayGroups(next, "关键词已恢复自动布局");
+      });
+      autoLayoutButton.disabled = savingOverlays || group.layout === "auto";
+      settings.append(autoLayoutButton);
+    }
+    section.append(settings);
 
     group.items.forEach((item, itemIndex) => {
       const row = document.createElement("div");
@@ -415,8 +611,9 @@ function renderStructuredEditor() {
       const input = document.createElement("input");
       input.type = "text";
       input.value = item.display_text;
-      input.maxLength = 120;
-      input.setAttribute("aria-label", `清单 ${groupIndex + 1} 第 ${itemIndex + 1} 条显示文字`);
+      input.minLength = isKeywords ? 2 : 1;
+      input.maxLength = isKeywords ? 3 : 120;
+      input.setAttribute("aria-label", `${kindLabel} ${groupIndex + 1} 第 ${itemIndex + 1} 条显示文字`);
       input.dataset.structuredAction = "";
       input.addEventListener("change", () => {
         if (input.value.trim() === item.display_text) return;
@@ -427,7 +624,7 @@ function renderStructuredEditor() {
             : entry),
           human_modified: true,
         }));
-        void saveOverlayGroups(next, "清单文案已保存");
+        void saveOverlayGroups(next, `${kindLabel}文案已保存`);
       });
       row.append(input);
       row.append(compactButton("替换", "", () => {
@@ -446,10 +643,10 @@ function renderStructuredEditor() {
             : entry),
           human_modified: true,
         }));
-        void saveOverlayGroups(next, "清单条目范围已替换");
+        void saveOverlayGroups(next, `${kindLabel}条目范围已替换`);
       }));
       row.append(compactButton("×", "compact-button--danger", () => {
-        if (!window.confirm("确认删除这个清单条目吗")) return;
+        if (!window.confirm(`确认删除这个${kindLabel}条目吗`)) return;
         const groupsInput = currentOverlayGroups();
         const next = group.items.length === 1
           ? groupsInput.filter((candidate) => candidate.id !== group.id)
@@ -458,12 +655,12 @@ function renderStructuredEditor() {
             items: candidate.items.filter((entry) => entry.id !== item.id),
             human_modified: true,
           }));
-        void saveOverlayGroups(next, "清单条目已删除");
+        void saveOverlayGroups(next, `${kindLabel}条目已删除`);
       }));
       section.append(row);
     });
 
-    section.append(compactButton("追加当前选择", "", () => {
+    const appendButton = compactButton("追加当前选择", "", () => {
       const range = selectionInfo();
       if (!range?.contiguous) {
         setSaveStatus("请先选择一段连续逐字稿", true);
@@ -473,6 +670,11 @@ function renderStructuredEditor() {
         .slice(range.start, range.end + 1)
         .map((word) => word.text)
         .join("");
+      const keywordCharacterCount = Array.from(displayText.replace(/\s/g, "")).length;
+      if (isKeywords && (keywordCharacterCount < 2 || keywordCharacterCount > 3)) {
+        setSaveStatus("关键词屏幕文案必须是 2 到 3 个字符", true);
+        return;
+      }
       const next = updatedGroup(currentOverlayGroups(), group.id, (candidate) => ({
         ...candidate,
         items: [
@@ -485,8 +687,10 @@ function renderStructuredEditor() {
         ],
         human_modified: true,
       }));
-      void saveOverlayGroups(next, "清单条目已追加");
-    }));
+      void saveOverlayGroups(next, `${kindLabel}条目已追加`);
+    });
+    appendButton.disabled = savingOverlays || group.items.length >= (isKeywords ? 4 : 8);
+    section.append(appendButton);
     elements.structuredEditor.append(section);
   });
 }
@@ -552,8 +756,7 @@ async function loadState(options = {}) {
       setSaveStatus("网页与导出引擎版本不一致，请重启服务后再导出", true);
     }
   } catch (error) {
-    setConnection("连接失败", "error");
-    setSaveStatus(error.message, true);
+    markServiceDisconnected();
   }
 }
 
@@ -577,6 +780,7 @@ async function saveProject() {
   } catch (error) {
     setSaveStatus(error.message, true);
     renderProjectSaveButton("保存失败");
+    if (error.message.includes("后台服务已断开")) markServiceDisconnected();
     saveButtonResetTimer = setTimeout(() => renderProjectSaveButton(), 2000);
   } finally {
     savingProject = false;
@@ -636,6 +840,25 @@ function setCaptionBoxInState(box) {
   if (state.overlays?.captions) state.overlays.captions.box = { ...normalized };
 }
 
+function normalizedCaptionFontSizeRatio(value) {
+  return Number(clamp(Number(value) || 0.015, 0.015, 0.15).toFixed(6));
+}
+
+function setCaptionFontSizeInState(cueId, fontSizeRatio) {
+  const normalized = normalizedCaptionFontSizeRatio(fontSizeRatio);
+  if (state?.overlays?.captions) {
+    state.overlays.captions.cue_font_size_ratios = {
+      ...(state.overlays.captions.cue_font_size_ratios || {}),
+      [cueId]: normalized,
+    };
+  }
+  for (const caption of playbackCaptions) {
+    if (captionSourceCueId(caption) !== cueId) continue;
+    caption.font_size_ratio = normalized;
+  }
+  return normalized;
+}
+
 function renderCaptionSelection() {
   elements.subtitleOverlay.classList.toggle("subtitle-overlay--selected", captionBoxSelected);
   elements.subtitleOverlay.classList.toggle("subtitle-overlay--dragging", Boolean(captionInteraction));
@@ -663,22 +886,54 @@ async function saveCaptionBox(box, previousBox) {
   }
 }
 
+async function saveCaptionFontSize(cueId, fontSizeRatio, previousFontSizeRatio) {
+  if (!renderEngineCompatible || savingCaptions) return;
+  try {
+    savingCaptions = true;
+    renderCaptionControls();
+    setSaveStatus("正在保存当前字幕字号");
+    await requestJson("/api/overlays/captions", {
+      method: "PATCH",
+      body: JSON.stringify({ cue_id: cueId, font_size_ratio: fontSizeRatio }),
+    });
+    await loadState();
+    setSaveStatus("当前字幕字号已保存并热重载");
+  } catch (error) {
+    setCaptionFontSizeInState(cueId, previousFontSizeRatio);
+    setSaveStatus(error.message, true);
+  } finally {
+    savingCaptions = false;
+    renderCaptionControls();
+  }
+}
+
 function beginCaptionInteraction(event) {
   if (event.button !== 0 || !state?.captionTrack?.enabled || savingCaptions) return;
+  const caption = currentCaptionAt(elements.video.currentTime || 0);
+  if (!caption) return;
   const stageRect = elements.videoStage.getBoundingClientRect();
   if (!stageRect.width || !stageRect.height) return;
   event.preventDefault();
   event.stopPropagation();
   captionBoxSelected = true;
+  selectCaptionText(caption);
   const startBox = normalizedCaptionBox(state.captionTrack.box);
+  const cueId = captionSourceCueId(caption);
+  const startFontSizeRatio = normalizedCaptionFontSizeRatio(
+    caption.font_size_ratio || state.captionTrack.style.font_size_ratio,
+  );
+  const resizingFont = Boolean(event.target.closest(".subtitle-resize-handle"));
   captionInteraction = {
     pointerId: event.pointerId,
-    mode: event.target.closest(".subtitle-resize-handle") ? "resize" : "move",
+    mode: resizingFont ? "font-resize" : "move",
+    cueId,
     startClientX: event.clientX,
     startClientY: event.clientY,
     stageRect,
     startBox,
     currentBox: startBox,
+    startFontSizeRatio,
+    currentFontSizeRatio: startFontSizeRatio,
     moved: false,
     wasPlaying: !elements.video.paused,
   };
@@ -693,20 +948,22 @@ function updateCaptionInteraction(event) {
   event.preventDefault();
   const deltaX = (event.clientX - interaction.startClientX) / interaction.stageRect.width;
   const deltaY = (event.clientY - interaction.startClientY) / interaction.stageRect.height;
-  const start = interaction.startBox;
-  let next;
-  if (interaction.mode === "resize") {
-    next = {
-      ...start,
-      width: clamp(start.width + deltaX, 0.65, 1 - start.x),
-    };
-  } else {
-    next = {
-      ...start,
-      x: clamp(start.x + deltaX, 0, 1 - start.width),
-      y: clamp(start.y + deltaY, 0, 1 - start.height),
-    };
+  if (interaction.mode === "font-resize") {
+    const minDimension = Math.min(interaction.stageRect.width, interaction.stageRect.height);
+    const fontDelta = (event.clientY - interaction.startClientY) / minDimension;
+    interaction.currentFontSizeRatio = setCaptionFontSizeInState(
+      interaction.cueId,
+      interaction.startFontSizeRatio + fontDelta,
+    );
+    interaction.moved = Math.abs(interaction.currentFontSizeRatio - interaction.startFontSizeRatio) > 0.000001;
+    return;
   }
+  const start = interaction.startBox;
+  const next = {
+    ...start,
+    x: clamp(start.x + deltaX, 0, 1 - start.width),
+    y: clamp(start.y + deltaY, 0, 1 - start.height),
+  };
   interaction.currentBox = normalizedCaptionBox(next);
   interaction.moved = !captionBoxesEqual(interaction.startBox, interaction.currentBox);
   setCaptionBoxInState(interaction.currentBox);
@@ -728,9 +985,21 @@ function finishCaptionInteraction(event, cancelled = false) {
     elements.subtitleOverlay.releasePointerCapture(interaction.pointerId);
   }
   if (cancelled) {
-    setCaptionBoxInState(interaction.startBox);
+    if (interaction.mode === "font-resize") {
+      setCaptionFontSizeInState(interaction.cueId, interaction.startFontSizeRatio);
+    } else {
+      setCaptionBoxInState(interaction.startBox);
+    }
   } else if (interaction.moved) {
-    void saveCaptionBox(interaction.currentBox, interaction.startBox);
+    if (interaction.mode === "font-resize") {
+      void saveCaptionFontSize(
+        interaction.cueId,
+        interaction.currentFontSizeRatio,
+        interaction.startFontSizeRatio,
+      );
+    } else {
+      void saveCaptionBox(interaction.currentBox, interaction.startBox);
+    }
   }
   renderCaptionSelection();
   resumeCaptionPlayback(interaction);
@@ -753,10 +1022,100 @@ function setStructuredBoxInState(groupId, box) {
   }
 }
 
+function setStructuredItemBoxInState(groupId, itemId, box, layout = "custom") {
+  const normalized = normalizedCaptionBox(box);
+  const group = structuredGroupById(groupId);
+  const updateItems = (items) => {
+    const item = items?.find((candidate) => candidate.id === itemId);
+    if (item) item.box = { ...normalized };
+  };
+  if (group) {
+    group.layout = layout;
+    updateItems(group.items);
+  }
+  if (state?.overlays?.timed_overlays) {
+    const stored = state.overlays.timed_overlays.find((candidate) => candidate.id === groupId);
+    if (stored) {
+      stored.layout = layout;
+      updateItems(stored.items);
+    }
+  }
+  for (const playbackState of playbackOverlays) {
+    if (playbackState.overlay_id === groupId) updateItems(playbackState.items);
+  }
+}
+
+function normalizedStructuredFontSizeRatio(value) {
+  return Number(clamp(Number(value) || 0.015, 0.015, 0.12).toFixed(6));
+}
+
+function setStructuredFontSizeInState(groupId, fontSizeRatio) {
+  const normalized = normalizedStructuredFontSizeRatio(fontSizeRatio);
+  const minDimension = Math.min(
+    Number(state?.project?.displayWidth) || 0,
+    Number(state?.project?.displayHeight) || 0,
+  );
+  const updateGroup = (candidate) => {
+    if (!candidate || candidate.id !== groupId) return;
+    candidate.style = { ...candidate.style, font_size_ratio: normalized };
+    if (minDimension > 0 && "fontSize" in candidate) {
+      candidate.fontSize = Math.max(12, Math.round(minDimension * normalized));
+      candidate.lineHeight = Math.max(candidate.fontSize, Math.round(candidate.fontSize * 1.25));
+    }
+  };
+  updateGroup(structuredGroupById(groupId));
+  for (const candidate of state?.overlays?.timed_overlays || []) updateGroup(candidate);
+  for (const candidate of playbackOverlays) {
+    if (candidate.overlay_id !== groupId) continue;
+    candidate.style = { ...candidate.style, font_size_ratio: normalized };
+    if (minDimension > 0) {
+      candidate.fontSize = Math.max(12, Math.round(minDimension * normalized));
+      candidate.lineHeight = Math.max(candidate.fontSize, Math.round(candidate.fontSize * 1.25));
+    }
+  }
+  return normalized;
+}
+
+function resizeKeywordBoxesInState(groupId, startItemBoxes, widthScale, layout = "custom") {
+  const resized = {};
+  for (const [itemId, startBoxInput] of Object.entries(startItemBoxes || {})) {
+    const startBox = normalizedCaptionBox(startBoxInput);
+    const centerX = startBox.x + startBox.width / 2;
+    const width = clamp(startBox.width * widthScale, 0.10, 1);
+    const box = normalizedCaptionBox({
+      ...startBox,
+      x: clamp(centerX - width / 2, 0, 1 - width),
+      width,
+    });
+    setStructuredItemBoxInState(groupId, itemId, box, layout);
+    resized[itemId] = box;
+  }
+  return resized;
+}
+
 function renderStructuredSelection() {
   elements.structuredOverlay.classList.toggle("structured-overlay--selected", structuredBoxSelected);
-  elements.structuredOverlay.classList.toggle("structured-overlay--dragging", Boolean(structuredInteraction));
-  elements.structuredOverlay.setAttribute("aria-pressed", String(structuredBoxSelected));
+  elements.structuredOverlay.classList.toggle(
+    "structured-overlay--dragging",
+    Boolean(structuredInteraction?.target === "group"),
+  );
+  elements.structuredOverlay.setAttribute(
+    "aria-pressed",
+    String(structuredBoxSelected || Boolean(structuredSelectedItemId)),
+  );
+  for (const itemElement of elements.structuredList.querySelectorAll("[data-item-id]")) {
+    const selected = itemElement.dataset.itemId === structuredSelectedItemId;
+    itemElement.classList.toggle("structured-item--selected", selected);
+    itemElement.classList.toggle(
+      "structured-item--dragging",
+      selected && Boolean(structuredInteraction && structuredInteraction.target !== "font"),
+    );
+    itemElement.classList.toggle("structured-keyword--selected", selected);
+    itemElement.classList.toggle(
+      "structured-keyword--dragging",
+      selected && Boolean(structuredInteraction?.target === "item"),
+    );
+  }
 }
 
 function saveStructuredBox(groupId, box) {
@@ -768,6 +1127,36 @@ function saveStructuredBox(groupId, box) {
   void saveOverlayGroups(next, "清单区块已保存并热重载");
 }
 
+function saveStructuredItemBox(groupId, itemId, box) {
+  const next = updatedGroup(currentOverlayGroups(), groupId, (candidate) => ({
+    ...candidate,
+    layout: "custom",
+    items: candidate.items.map((item) => item.id === itemId
+      ? overlayItemInput(item, { box: { ...box } })
+      : item),
+    human_modified: true,
+  }));
+  void saveOverlayGroups(next, "关键词位置已保存并热重载");
+}
+
+function saveStructuredFontSize(groupId, fontSizeRatio, itemBoxes = null) {
+  const next = updatedGroup(currentOverlayGroups(), groupId, (candidate) => ({
+    ...candidate,
+    ...(itemBoxes ? {
+      layout: "custom",
+      items: candidate.items.map((item) => overlayItemInput(item, {
+        box: { ...(itemBoxes[item.id] || item.box) },
+      })),
+    } : {}),
+    style: {
+      ...candidate.style,
+      font_size_ratio: normalizedStructuredFontSizeRatio(fontSizeRatio),
+    },
+    human_modified: true,
+  }));
+  void saveOverlayGroups(next, "整组字号已保存并热重载");
+}
+
 function beginStructuredInteraction(event) {
   const active = currentStructuredOverlayAt(elements.video.currentTime || 0);
   const group = active ? structuredGroupById(active.overlay_id) : null;
@@ -776,16 +1165,35 @@ function beginStructuredInteraction(event) {
   if (!stageRect.width || !stageRect.height) return;
   event.preventDefault();
   event.stopPropagation();
-  structuredBoxSelected = true;
-  const startBox = normalizedCaptionBox(group.box);
+  const itemElement = event.target.closest("[data-item-id]");
+  if (group.type === "progressive_keywords" && !itemElement) return;
+  const itemId = itemElement?.dataset.itemId || null;
+  const item = itemId ? group.items.find((candidate) => candidate.id === itemId) : null;
+  const resizingFont = Boolean(event.target.closest(".structured-item-resize-handle"));
+  structuredBoxSelected = !item;
+  structuredSelectedItemId = item?.id || null;
+  selectStructuredText(group.id);
+  const startBox = normalizedCaptionBox(item?.box || group.box);
+  const startFontSizeRatio = normalizedStructuredFontSizeRatio(group.style.font_size_ratio);
+  const startItemBoxes = group.type === "progressive_keywords"
+    ? Object.fromEntries(group.items.map((candidate) => [candidate.id, normalizedCaptionBox(candidate.box)]))
+    : {};
   structuredInteraction = {
     pointerId: event.pointerId,
     groupId: group.id,
-    mode: event.target.closest(".structured-resize-handle") ? "resize" : "move",
+    groupType: group.type,
+    itemId,
+    target: resizingFont ? "font" : item && group.type === "progressive_keywords" ? "item" : "group",
+    mode: resizingFont ? "font-resize" : "move",
     startClientX: event.clientX,
     startClientY: event.clientY,
     stageRect,
     startBox,
+    startLayout: group.layout || null,
+    startFontSizeRatio,
+    currentFontSizeRatio: startFontSizeRatio,
+    startItemBoxes,
+    currentItemBoxes: startItemBoxes,
     currentBox: startBox,
     moved: false,
     wasPlaying: !elements.video.paused,
@@ -801,21 +1209,36 @@ function updateStructuredInteraction(event) {
   event.preventDefault();
   const deltaX = (event.clientX - interaction.startClientX) / interaction.stageRect.width;
   const deltaY = (event.clientY - interaction.startClientY) / interaction.stageRect.height;
-  const start = interaction.startBox;
-  const next = interaction.mode === "resize"
-    ? {
-      ...start,
-      width: clamp(start.width + deltaX, 0.05, 1 - start.x),
-      height: clamp(start.height + deltaY, 0.05, 1 - start.y),
+  if (interaction.mode === "font-resize") {
+    const minDimension = Math.min(interaction.stageRect.width, interaction.stageRect.height);
+    const fontDelta = (event.clientY - interaction.startClientY) / minDimension;
+    interaction.currentFontSizeRatio = setStructuredFontSizeInState(
+      interaction.groupId,
+      interaction.startFontSizeRatio + fontDelta,
+    );
+    if (interaction.groupType === "progressive_keywords") {
+      interaction.currentItemBoxes = resizeKeywordBoxesInState(
+        interaction.groupId,
+        interaction.startItemBoxes,
+        interaction.currentFontSizeRatio / interaction.startFontSizeRatio,
+      );
     }
-    : {
-      ...start,
-      x: clamp(start.x + deltaX, 0, 1 - start.width),
-      y: clamp(start.y + deltaY, 0, 1 - start.height),
-    };
+    interaction.moved = Math.abs(interaction.currentFontSizeRatio - interaction.startFontSizeRatio) > 0.000001;
+    return;
+  }
+  const start = interaction.startBox;
+  const next = {
+    ...start,
+    x: clamp(start.x + deltaX, 0, 1 - start.width),
+    y: clamp(start.y + deltaY, 0, 1 - start.height),
+  };
   interaction.currentBox = normalizedCaptionBox(next);
   interaction.moved = !captionBoxesEqual(interaction.startBox, interaction.currentBox);
-  setStructuredBoxInState(interaction.groupId, interaction.currentBox);
+  if (interaction.target === "item") {
+    setStructuredItemBoxInState(interaction.groupId, interaction.itemId, interaction.currentBox);
+  } else {
+    setStructuredBoxInState(interaction.groupId, interaction.currentBox);
+  }
 }
 
 function finishStructuredInteraction(event, cancelled = false) {
@@ -830,9 +1253,38 @@ function finishStructuredInteraction(event, cancelled = false) {
     elements.structuredOverlay.releasePointerCapture(interaction.pointerId);
   }
   if (cancelled) {
-    setStructuredBoxInState(interaction.groupId, interaction.startBox);
+    if (interaction.target === "font") {
+      setStructuredFontSizeInState(interaction.groupId, interaction.startFontSizeRatio);
+      if (interaction.groupType === "progressive_keywords") {
+        resizeKeywordBoxesInState(
+          interaction.groupId,
+          interaction.startItemBoxes,
+          1,
+          interaction.startLayout || "auto",
+        );
+      }
+    } else if (interaction.target === "item") {
+      setStructuredItemBoxInState(
+        interaction.groupId,
+        interaction.itemId,
+        interaction.startBox,
+        interaction.startLayout || "auto",
+      );
+    } else {
+      setStructuredBoxInState(interaction.groupId, interaction.startBox);
+    }
   } else if (interaction.moved) {
-    saveStructuredBox(interaction.groupId, interaction.currentBox);
+    if (interaction.target === "font") {
+      saveStructuredFontSize(
+        interaction.groupId,
+        interaction.currentFontSizeRatio,
+        interaction.groupType === "progressive_keywords" ? interaction.currentItemBoxes : null,
+      );
+    } else if (interaction.target === "item") {
+      saveStructuredItemBox(interaction.groupId, interaction.itemId, interaction.currentBox);
+    } else {
+      saveStructuredBox(interaction.groupId, interaction.currentBox);
+    }
   }
   renderStructuredSelection();
   resumeCaptionPlayback(interaction);
@@ -970,11 +1422,16 @@ async function startRender() {
   }
   if (!window.confirm("确认使用当前全部效果生成最终 MP4 吗")) return;
   try {
+    elements.renderButton.disabled = true;
+    elements.renderButton.textContent = "正在提交";
+    setSaveStatus("正在提交出片任务");
     await requestJson("/api/render", { method: "POST", body: "{}" });
     setSaveStatus("出片任务已经开始");
     await loadState();
   } catch (error) {
     setSaveStatus(error.message, true);
+    if (error.message.includes("后台服务已断开")) markServiceDisconnected();
+    else renderRenderStatus();
   }
 }
 
@@ -1041,7 +1498,8 @@ function renderSubtitleOverlay(caption) {
   const frameHeight = elements.videoStage.clientHeight;
   const minDimension = Math.min(frameWidth, frameHeight);
   const layoutFontScale = Number(caption.layout_font_scale) || 1;
-  const fontSize = Math.max(12, minDimension * style.font_size_ratio) * layoutFontScale;
+  const fontSizeRatio = Number(caption.font_size_ratio) || style.font_size_ratio;
+  const fontSize = Math.max(12, minDimension * fontSizeRatio) * layoutFontScale;
   const strokeWidth = Math.max(1, minDimension * style.stroke_width_ratio);
   overlay.style.display = "flex";
   overlay.style.left = `${box.x * 100}%`;
@@ -1049,7 +1507,7 @@ function renderSubtitleOverlay(caption) {
   overlay.style.bottom = `${(1 - box.y - box.height) * 100}%`;
   overlay.style.width = `${box.width * 100}%`;
   overlay.style.height = "auto";
-  overlay.style.fontFamily = `"${style.font_family}", "Microsoft YaHei", sans-serif`;
+  overlay.style.fontFamily = `"${caption.font_family || style.font_family}", "Microsoft YaHei", sans-serif`;
   overlay.style.fontSize = `${fontSize}px`;
   overlay.style.color = style.color;
   overlay.style.webkitTextStroke = `${strokeWidth}px ${style.stroke_color}`;
@@ -1073,10 +1531,24 @@ function renderSubtitleOverlay(caption) {
   renderCaptionSelection();
 }
 
-function renderStructuredOverlay(active) {
+function applyStructuredEntryAnimation(active, time) {
+  for (const itemElement of elements.structuredList.querySelectorAll("[data-item-id]")) {
+    const item = active.items.find((candidate) => candidate.id === itemElement.dataset.itemId);
+    const shouldAnimate = active.enter_animation === "pop"
+      && active.entering_item_id === item?.id;
+    const progress = shouldAnimate
+      ? clamp((time - item.start) / Number(active.animation_duration || 0.18), 0, 1)
+      : 1;
+    itemElement.style.opacity = String(progress);
+    itemElement.style.transform = `scale(${0.85 + 0.15 * progress})`;
+  }
+}
+
+function renderStructuredOverlay(active, time) {
   const overlay = elements.structuredOverlay;
   if (!active) {
     overlay.style.display = "none";
+    overlay.classList.remove("structured-overlay--keywords");
     elements.structuredList.replaceChildren();
     overlay.dataset.activeState = "";
     overlay.dataset.overlayId = "";
@@ -1088,26 +1560,44 @@ function renderStructuredOverlay(active) {
   const minDimension = Math.min(frameWidth, frameHeight);
   const fontSize = Math.max(12, minDimension * style.font_size_ratio);
   const strokeWidth = Math.max(1, minDimension * style.stroke_width_ratio);
-  overlay.style.display = "flex";
-  overlay.style.left = `${box.x * 100}%`;
-  overlay.style.top = `${box.y * 100}%`;
-  overlay.style.width = `${box.width * 100}%`;
-  overlay.style.height = `${box.height * 100}%`;
+  const isKeywords = active.type === "progressive_keywords";
+  overlay.classList.toggle("structured-overlay--keywords", isKeywords);
+  overlay.style.display = isKeywords ? "block" : "flex";
+  overlay.style.left = `${(isKeywords ? 0 : box.x) * 100}%`;
+  overlay.style.top = `${(isKeywords ? 0 : box.y) * 100}%`;
+  overlay.style.width = `${(isKeywords ? 1 : box.width) * 100}%`;
+  overlay.style.height = isKeywords ? "100%" : "auto";
   overlay.style.fontFamily = `"${style.font_family}", "Microsoft YaHei", sans-serif`;
   overlay.style.fontSize = `${fontSize}px`;
   overlay.style.color = style.color;
   overlay.style.webkitTextStroke = `${strokeWidth}px ${style.stroke_color}`;
-  elements.structuredList.style.gap = `${frameHeight * style.item_gap_ratio}px`;
+  elements.structuredList.style.gap = isKeywords ? "0" : `${frameHeight * style.item_gap_ratio}px`;
   if (overlay.dataset.activeState !== active.id) {
     elements.structuredList.replaceChildren();
     for (const item of active.items) {
       const row = document.createElement("div");
-      row.className = "structured-list__item";
+      row.className = isKeywords ? "structured-keyword" : "structured-list__item";
+      row.dataset.itemId = item.id;
       row.textContent = item.lines.join("\n");
+      const resizeHandle = document.createElement("span");
+      resizeHandle.className = "structured-item-resize-handle";
+      resizeHandle.setAttribute("aria-hidden", "true");
+      row.append(resizeHandle);
       elements.structuredList.append(row);
     }
     overlay.dataset.activeState = active.id;
   }
+  if (isKeywords) {
+    for (const item of active.items) {
+      const row = elements.structuredList.querySelector(`[data-item-id="${CSS.escape(item.id)}"]`);
+      if (!row) continue;
+      row.style.left = `${item.box.x * 100}%`;
+      row.style.top = `${(item.box.y + item.box.height / 2) * 100}%`;
+      row.style.width = `${item.box.width * 100}%`;
+      row.style.height = "auto";
+    }
+  }
+  applyStructuredEntryAnimation(active, time);
   overlay.dataset.overlayId = active.overlay_id;
   renderStructuredSelection();
 }
@@ -1119,7 +1609,7 @@ function animationTick() {
     const effect = currentEffectAt(time);
     const percent = scalePercentAtTime(effect, time);
     drawPreviewFrame(percent);
-    renderStructuredOverlay(currentStructuredOverlayAt(time));
+    renderStructuredOverlay(currentStructuredOverlayAt(time), time);
     renderSubtitleOverlay(currentCaptionAt(time));
     elements.activeEffectBadge.textContent = effect
       ? `${percent.toFixed(1)}% · ${effect.effect_label}`
@@ -1143,6 +1633,9 @@ elements.saveProjectButton.addEventListener("click", saveProject);
 elements.subtitleToggleButton.addEventListener("click", () => {
   void setCaptionsEnabled(!Boolean(state?.captionTrack?.enabled));
 });
+elements.fontFamilySelect.addEventListener("change", () => {
+  saveSelectedFont(elements.fontFamilySelect.value);
+});
 elements.subtitleOverlay.addEventListener("pointerdown", beginCaptionInteraction);
 elements.subtitleOverlay.addEventListener("pointermove", updateCaptionInteraction);
 elements.subtitleOverlay.addEventListener("pointerup", (event) => finishCaptionInteraction(event));
@@ -1150,10 +1643,13 @@ elements.subtitleOverlay.addEventListener("pointercancel", (event) => finishCapt
 elements.subtitleOverlay.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
+    const caption = currentCaptionAt(elements.video.currentTime || 0);
+    if (caption) selectCaptionText(caption);
     captionBoxSelected = true;
     renderCaptionSelection();
   } else if (event.key === "Escape") {
     captionBoxSelected = false;
+    clearSelectedTextTarget("caption");
     renderCaptionSelection();
   }
 });
@@ -1164,25 +1660,33 @@ elements.structuredOverlay.addEventListener("pointercancel", (event) => finishSt
 elements.structuredOverlay.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
+    const active = currentStructuredOverlayAt(elements.video.currentTime || 0);
+    if (active) selectStructuredText(active.overlay_id);
     structuredBoxSelected = true;
     renderStructuredSelection();
   } else if (event.key === "Escape") {
     structuredBoxSelected = false;
+    structuredSelectedItemId = null;
+    clearSelectedTextTarget("overlay");
     renderStructuredSelection();
   }
 });
 document.addEventListener("pointerdown", (event) => {
-  if (!elements.subtitleOverlay.contains(event.target)) {
+  const clickedTextStyleAction = event.target.closest?.("[data-text-style-action]");
+  if (!elements.subtitleOverlay.contains(event.target) && !clickedTextStyleAction) {
     captionBoxSelected = false;
+    clearSelectedTextTarget("caption");
     renderCaptionSelection();
   }
-  if (!elements.structuredOverlay.contains(event.target)) {
+  if (!elements.structuredOverlay.contains(event.target) && !clickedTextStyleAction) {
     structuredBoxSelected = false;
+    structuredSelectedItemId = null;
+    clearSelectedTextTarget("overlay");
     renderStructuredSelection();
   }
   const clickedWord = event.target.closest?.(".word");
   const clickedEffectAction = event.target.closest?.(
-    "[data-selection-effect], [data-direct-effect], [data-structured-action]",
+    "[data-selection-effect], [data-direct-effect], [data-structured-action], [data-text-style-action]",
   );
   if (!clickedWord && !clickedEffectAction && selectedWords.size > 0) {
     selectedWords.clear();
@@ -1193,6 +1697,7 @@ document.addEventListener("pointerdown", (event) => {
 });
 elements.playPauseButton.addEventListener("click", togglePlayback);
 elements.newListButton.addEventListener("click", createListFromSelection);
+elements.newKeywordsButton.addEventListener("click", createKeywordsFromSelection);
 elements.previewCanvas.addEventListener("click", togglePlayback);
 elements.seekSlider.addEventListener("pointerdown", () => { seeking = true; });
 elements.seekSlider.addEventListener("input", () => {
@@ -1221,12 +1726,15 @@ for (const button of elements.selectionEffectButtons) {
 }
 
 const events = new EventSource("/api/events");
-events.addEventListener("ready", () => setConnection("已连接", "ok"));
+events.addEventListener("ready", () => {
+  setConnection("已连接", "ok");
+  void loadState({ external: true });
+});
 events.addEventListener("state", () => {
   clearTimeout(reloadTimer);
   reloadTimer = setTimeout(() => loadState({ external: true }), 100);
 });
-events.onerror = () => setConnection("正在重连", "muted");
+events.onerror = () => markServiceDisconnected();
 
 loadState();
 requestAnimationFrame(animationTick);

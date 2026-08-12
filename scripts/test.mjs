@@ -22,6 +22,7 @@ import {
   compileStructuredOverlayTrack,
   defaultOverlays,
   layoutCaptionText,
+  normalizedFontFamily,
   parseSrt,
   splitCaptionLines,
   validateOverlays,
@@ -189,10 +190,17 @@ assert.equal(balancedChinese.fontScale, 1);
 const overlays = defaultOverlays();
 overlays.captions.enabled = true;
 overlays.captions.box = { x: 0.18, y: 0.24, width: 0.58, height: 0.32, unit: "ratio" };
+overlays.captions.cue_fonts = { "caption-001": "华文中宋" };
+overlays.captions.cue_font_size_ratios = { "caption-001": 0.075 };
 const normalizedOverlays = validateOverlays(overlays);
 assert.equal(normalizedOverlays.version, 2);
 assert.deepEqual(normalizedOverlays.timed_overlays, []);
 assert.deepEqual(normalizedOverlays.captions.box, overlays.captions.box);
+assert.equal(normalizedOverlays.captions.style.font_family, "Microsoft YaHei");
+assert.equal(normalizedOverlays.captions.cue_fonts["caption-001"], "华文中宋");
+assert.equal(normalizedOverlays.captions.cue_font_size_ratios["caption-001"], 0.075);
+assert.equal(normalizedFontFamily("Noto Sans SC"), "Microsoft YaHei");
+assert.throws(() => normalizedFontFamily("SimSun"), /只支持默认粗黑体或华文中宋/);
 assert.throws(
   () => validateOverlays({
     ...overlays,
@@ -218,6 +226,9 @@ assert.equal(captionTrack.enabled, true);
 assert.equal(captionTrack.source, "transcript");
 assert.equal(captionTrack.effectCount, 1);
 assert.ok(captionTrack.cues.length > 0);
+assert.equal(captionTrack.cues[0].font_family, "华文中宋");
+assert.equal(captionTrack.cues[0].font_size_ratio, 0.075);
+assert.equal(captionTrack.cues[0].font_size, 54);
 const emphasizedSegment = captionTrack.cues
   .flatMap((cue) => cue.styledLines.flat())
   .find((segment) => segment.style?.effect_type === "large_bright");
@@ -229,9 +240,11 @@ assert.ok(captionTrack.cues.every((cue) => cue.layout_font_scale > 0 && cue.layo
 const ass = buildAss(captionProject, captionTrack);
 assert.match(ass, /PlayResX: 720/);
 assert.match(ass, /Dialogue: 0/);
-assert.match(ass, /Noto Sans SC/);
+assert.match(ass, /Microsoft YaHei/);
+assert.match(ass, /\\fn华文中宋/);
+assert.match(ass, /\\fn华文中宋\\fs54/);
 assert.match(ass, /\\fs\d+\\c&H008AF0FF/);
-assert.match(ass, /\\pos\(338,717\)\\fs\d+/);
+assert.match(ass, /\\pos\(338,717\)\\fn华文中宋\\fs\d+/);
 assert.equal((ass.match(/\\pos\(338,717\)/g) || []).length, captionTrack.cues.length);
 const captionFilter = buildFilter({ displayWidth: 720, displayHeight: 1280 }, effects, {
   overlayAssFile: "render-overlays.ass",
@@ -257,11 +270,15 @@ assert.equal(structuredTrack.states[0].start, 0.1);
 assert.equal(structuredTrack.states[0].end, 0.8);
 assert.equal(structuredTrack.states[0].items.length, 1);
 assert.equal(structuredTrack.states[1].items.length, 2);
+assert.equal(structuredTrack.groups[0].fontSize, 32);
+assert.equal(structuredTrack.groups[0].requiredHeight, 98);
+assert.equal(structuredTrack.groups[0].box.height, Number((98 / 1280).toFixed(6)));
 assert.deepEqual(
   structuredTrack.suppressionRanges.map((range) => [range.start, range.end]),
   [[0.1, 0.3], [0.8, 1]],
 );
 assert.equal(progressiveOverlays.timed_overlays[0].items[0].source_text, "这是");
+assert.equal(progressiveOverlays.timed_overlays[0].enter_animation, "none");
 const compiledScreen = compileScreenOverlays(
   captionProject,
   words,
@@ -275,6 +292,177 @@ assert.match(overlayAss, /Dialogue: 10/);
 assert.match(overlayAss, /一、这是/);
 assert.match(overlayAss, /二、危险/);
 assert.doesNotMatch(overlayAss, /Dialogue: 0[^\n]*这是/);
+assert.doesNotMatch(overlayAss, /\\fad\(/);
+
+const keywordOverlays = validateOverlays({
+  ...normalizedOverlays,
+  timed_overlays: [{
+    id: "overlay-keywords-test",
+    type: "progressive_keywords",
+    layout: "auto",
+    enter_animation: "pop",
+    style: { font_family: "华文中宋", font_size_ratio: 0.08, color: "#FFFFFF" },
+    items: [
+      { start_word_index: 0, end_word_index: 1, display_text: "普通人" },
+      { start_word_index: 2, end_word_index: 3, display_text: "也能" },
+      { start_word_index: 4, end_word_index: 5, display_text: "做网站" },
+    ],
+    source: "ai",
+  }],
+}, { words });
+const keywordGroup = keywordOverlays.timed_overlays[0];
+assert.equal(keywordGroup.type, "progressive_keywords");
+assert.equal(keywordGroup.layout, "auto");
+assert.equal(keywordGroup.enter_animation, "pop");
+assert.equal(keywordGroup.style.font_size_ratio, 0.08);
+assert.equal(keywordGroup.style.color, "#FFF08A");
+assert.equal(keywordGroup.style.font_family, "华文中宋");
+assert.deepEqual(keywordGroup.items.map((item) => item.box), [
+  { x: 0.13, y: 0.139167, width: 0.24, height: 0.055, unit: "ratio" },
+  { x: 0.38, y: 0.139167, width: 0.24, height: 0.055, unit: "ratio" },
+  { x: 0.63, y: 0.139167, width: 0.24, height: 0.055, unit: "ratio" },
+]);
+const keywordTrack = compileStructuredOverlayTrack(captionProject, words, keywordOverlays);
+assert.equal(keywordTrack.states.length, 3);
+assert.equal(keywordTrack.groups[0].fontSize, 58);
+assert.equal(new Set(keywordTrack.states.map((state) => state.fontSize)).size, 1);
+assert.ok(keywordTrack.groups[0].items.every((item) => item.lines.length === 1));
+assert.ok(keywordTrack.groups[0].items.every((item) => (
+  item.box.height === Number((item.lines.length * keywordTrack.groups[0].lineHeight / 1280).toFixed(6))
+)));
+assert.ok(keywordTrack.groups[0].items[0].box.height > keywordGroup.items[0].box.height);
+assert.equal(keywordTrack.states[1].entering_item_id, keywordGroup.items[1].id);
+assert.equal(keywordTrack.states[2].items.length, 3);
+const keywordAss = buildAss(captionProject, captionTrack, keywordTrack);
+assert.match(keywordAss, /\\an5\\pos\(180,213\)/);
+assert.match(keywordAss, /\\fs58\\c&H008AF0FF/);
+assert.match(keywordAss, /\\fad\(180,0\)\\fscx85\\fscy85\\t\(0,180,\\fscx100\\fscy100\)/);
+assert.equal((keywordAss.match(/\\fad\(/g) || []).length, 3);
+
+const autoKeywordLayouts = new Map();
+const expectedKeywordCenters = new Map([
+  [1, [[1 / 2, 1 / 6]]],
+  [2, [[1 / 3, 1 / 6], [2 / 3, 1 / 6]]],
+  [3, [[1 / 4, 1 / 6], [2 / 4, 1 / 6], [3 / 4, 1 / 6]]],
+  [4, [[1 / 3, 1 / 6], [2 / 3, 1 / 6], [1 / 3, 1 / 6 + 0.055 * 2], [2 / 3, 1 / 6 + 0.055 * 2]]],
+]);
+for (const itemCount of [1, 2, 3, 4]) {
+  const autoLayout = validateOverlays({
+    ...normalizedOverlays,
+    timed_overlays: [{
+      type: "progressive_keywords",
+      items: Array.from({ length: itemCount }, (_, wordIndex) => ({
+        start_word_index: wordIndex,
+        end_word_index: wordIndex,
+        display_text: `词${wordIndex + 1}`,
+      })),
+    }],
+  }, { words }).timed_overlays[0];
+  assert.equal(autoLayout.items.length, itemCount);
+  assert.equal(autoLayout.items.every((item) => item.box?.unit === "ratio"), true);
+  assert.equal(new Set(autoLayout.items.map((item) => `${item.box.x}:${item.box.y}`)).size, itemCount);
+  autoKeywordLayouts.set(itemCount, autoLayout.items.map((item) => item.box));
+  const centers = autoLayout.items.map((item) => [
+    item.box.x + item.box.width / 2,
+    item.box.y + item.box.height / 2,
+  ]);
+  for (let itemIndex = 0; itemIndex < centers.length; itemIndex += 1) {
+    const [actualX, actualY] = centers[itemIndex];
+    const [expectedX, expectedY] = expectedKeywordCenters.get(itemCount)[itemIndex];
+    assert.ok(Math.abs(actualX - expectedX) < 0.000001);
+    assert.ok(Math.abs(actualY - expectedY) < 0.000001);
+  }
+}
+assert.deepEqual(autoKeywordLayouts.get(4).slice(0, 2), autoKeywordLayouts.get(2));
+const fourKeywordFirstRowCenter = autoKeywordLayouts.get(4)[0].y + autoKeywordLayouts.get(4)[0].height / 2;
+const fourKeywordSecondRowCenter = autoKeywordLayouts.get(4)[2].y + autoKeywordLayouts.get(4)[2].height / 2;
+// 两行中心距等于两个词块高，即第一行与第二行之间空出一个字高的间距
+assert.ok(Math.abs(fourKeywordSecondRowCenter - fourKeywordFirstRowCenter - 0.055 * 2) < 0.001);
+
+assert.throws(
+  () => validateOverlays({
+    ...normalizedOverlays,
+    timed_overlays: [{
+      type: "progressive_keywords",
+      items: [{ start_word_index: 0, end_word_index: 0, display_text: "词" }],
+    }],
+  }, { words }),
+  /必须是 2 到 3 个字符/,
+);
+
+const animatedList = validateOverlays({
+  ...normalizedOverlays,
+  timed_overlays: [{
+    type: "progressive_list",
+    enter_animation: "pop",
+    items: [
+      { start_word_index: 0, end_word_index: 1 },
+      { start_word_index: 4, end_word_index: 5 },
+    ],
+  }],
+}, { words });
+const animatedListTrack = compileStructuredOverlayTrack(captionProject, words, animatedList);
+assert.equal(animatedListTrack.states[0].enter_animation, "pop");
+assert.equal(animatedListTrack.states[0].animation_duration, 0.18);
+assert.match(buildAss(captionProject, captionTrack, animatedListTrack), /\\fad\(180,0\)/);
+
+const customKeywordOverlays = validateOverlays({
+  ...normalizedOverlays,
+  timed_overlays: [{
+    id: "overlay-keywords-custom",
+    type: "progressive_keywords",
+    layout: "custom",
+    enter_animation: "none",
+    items: [{
+      start_word_index: 0,
+      end_word_index: 1,
+      display_text: "自定义",
+      box: { x: 0.1, y: 0.2, width: 0.3, height: 0.12 },
+    }],
+  }],
+}, { words });
+assert.deepEqual(customKeywordOverlays.timed_overlays[0].items[0].box, {
+  x: 0.1,
+  y: 0.2,
+  width: 0.3,
+  height: 0.12,
+  unit: "ratio",
+});
+assert.throws(
+  () => validateOverlays({
+    ...normalizedOverlays,
+    timed_overlays: [{
+      type: "progressive_keywords",
+      enter_animation: "bounce",
+      items: [{ start_word_index: 0, end_word_index: 0, display_text: "这是" }],
+    }],
+  }, { words }),
+  /只支持 none 或 pop/,
+);
+assert.throws(
+  () => validateOverlays({
+    ...normalizedOverlays,
+    timed_overlays: [{
+      type: "progressive_keywords",
+      layout: "circle",
+      items: [{ start_word_index: 0, end_word_index: 0, display_text: "这是" }],
+    }],
+  }, { words }),
+  /只支持 auto 或 custom/,
+);
+assert.throws(
+  () => validateOverlays({
+    ...normalizedOverlays,
+    timed_overlays: [{
+      type: "progressive_keywords",
+      items: [0, 1, 2, 3, 4].map((wordIndex) => ({
+        start_word_index: wordIndex,
+        end_word_index: wordIndex,
+      })),
+    }],
+  }, { words }),
+  /最多支持 4 个条目/,
+);
 assert.throws(
   () => validateOverlays({
     ...normalizedOverlays,

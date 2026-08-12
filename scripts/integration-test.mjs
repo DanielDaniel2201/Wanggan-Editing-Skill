@@ -43,10 +43,15 @@ try {
   const reviewHtml = await reviewHtmlResponse.text();
   assert.match(reviewHtml, /id="subtitleToggleButton"[^>]*>启用<\/button>/);
   assert.match(reviewHtml, /id="subtitleResizeHandle"/);
+  assert.doesNotMatch(reviewHtml, /id="subtitleFontResizeHandle"/);
   assert.match(reviewHtml, /id="structuredOverlay"/);
-  assert.match(reviewHtml, /id="structuredResizeHandle"/);
+  assert.doesNotMatch(reviewHtml, /id="structuredResizeHandle"/);
   assert.match(reviewHtml, /id="structuredEditor"/);
   assert.match(reviewHtml, /id="newListButton"/);
+  assert.match(reviewHtml, /id="newKeywordsButton"/);
+  assert.match(reviewHtml, /id="fontFamilySelect"/);
+  assert.match(reviewHtml, /<option value="Microsoft YaHei">默认粗黑体<\/option>/);
+  assert.match(reviewHtml, /<option value="华文中宋">华文中宋<\/option>/);
   assert.equal((reviewHtml.match(/data-selection-effect/g) || []).length, 5);
   assert.match(reviewHtml, /data-effect-type="short_emphasis"[^>]*>短促重点<\/button>/);
   assert.match(reviewHtml, /data-effect-type="large_bright"[^>]*>大字号、亮颜色<\/button>/);
@@ -64,12 +69,28 @@ try {
   const captionInteractionSource = reviewApp.match(
     /function updateCaptionInteraction[\s\S]*?function resumeCaptionPlayback/,
   )?.[0] || "";
-  assert.match(captionInteractionSource, /width: clamp\(start\.width \+ deltaX, 0\.65/);
+  assert.match(captionInteractionSource, /mode === "font-resize"/);
+  assert.match(captionInteractionSource, /setCaptionFontSizeInState/);
+  assert.doesNotMatch(captionInteractionSource, /width: clamp\(start\.width/);
   assert.doesNotMatch(captionInteractionSource, /height: clamp\(start\.height/);
   assert.match(reviewApp, /segment\.style\?\.color/);
   assert.match(reviewApp, /previewSelectionRange\(range\)/);
-  assert.match(reviewApp, /renderStructuredOverlay\(currentStructuredOverlayAt\(time\)\)/);
+  assert.match(reviewApp, /renderStructuredOverlay\(currentStructuredOverlayAt\(time\), time\)/);
   assert.match(reviewApp, /saveOverlayGroups/);
+  assert.match(reviewApp, /createKeywordsFromSelection/);
+  assert.match(reviewApp, /structured-keyword/);
+  assert.match(reviewApp, /structured-item-resize-handle/);
+  assert.match(reviewApp, /target: resizingFont \? "font"/);
+  assert.match(reviewApp, /setStructuredFontSizeInState/);
+  assert.match(reviewApp, /font_size_ratio: normalizedStructuredFontSizeRatio/);
+  assert.match(reviewApp, /cue_id: cueId, font_size_ratio: fontSizeRatio/);
+  assert.match(reviewApp, /resizeKeywordBoxesInState/);
+  assert.match(reviewApp, /AbortSignal\.timeout\(8000\)/);
+  assert.match(reviewApp, /function markServiceDisconnected/);
+  assert.match(reviewApp, /elements\.renderButton\.textContent = "正在提交"/);
+  assert.match(reviewApp, /enter_animation/);
+  assert.match(reviewApp, /function saveSelectedFont/);
+  assert.match(reviewApp, /cue_id: cueId, font_family: fontFamily/);
   assert.match(reviewApp, /selectedWords\.clear\(\);\s*await loadState\(\);\s*previewSelectionRange\(range\)/);
   assert.match(reviewApp, /clickedEffectAction = event\.target\.closest\?\.\([\s\S]*data-structured-action/);
   assert.match(reviewApp, /!clickedWord && !clickedEffectAction && selectedWords\.size > 0/);
@@ -81,7 +102,7 @@ try {
   const state = await stateResponse.json();
   assert.ok(state.words.length > 0);
   assert.ok(state.effects.length > 0);
-  assert.equal(state.renderEngineVersion, 9);
+  assert.equal(state.renderEngineVersion, 16);
   assert.ok(Array.isArray(state.playbackEffects));
   assert.ok(state.playbackEffects.length <= state.effects.length);
   assert.ok(Array.isArray(state.playbackCaptions));
@@ -103,6 +124,33 @@ try {
   const toggledState = await (await fetch(`${url}api/state`)).json();
   assert.equal(toggledState.captionTrack.enabled, true);
   assert.equal(toggledState.overlays.captions.enabled, true);
+
+  const firstCueId = toggledState.playbackCaptions[0].source_cue_id;
+  const captionFontResponse = await fetch(`${url}api/overlays/captions`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cue_id: firstCueId, font_family: "华文中宋" }),
+  });
+  assert.equal(captionFontResponse.status, 200);
+  const captionFontState = await (await fetch(`${url}api/state`)).json();
+  assert.equal(captionFontState.overlays.captions.cue_fonts[firstCueId], "华文中宋");
+  assert.equal(
+    captionFontState.playbackCaptions.find((caption) => caption.source_cue_id === firstCueId)?.font_family,
+    "华文中宋",
+  );
+
+  const captionFontSizeResponse = await fetch(`${url}api/overlays/captions`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cue_id: firstCueId, font_size_ratio: 0.085 }),
+  });
+  assert.equal(captionFontSizeResponse.status, 200);
+  const captionFontSizeState = await (await fetch(`${url}api/state`)).json();
+  assert.equal(captionFontSizeState.overlays.captions.cue_font_size_ratios[firstCueId], 0.085);
+  assert.equal(
+    captionFontSizeState.playbackCaptions.find((caption) => caption.source_cue_id === firstCueId)?.font_size_ratio,
+    0.085,
+  );
 
   const movedBox = { x: 0.18, y: 0.24, width: 0.58, height: 0.32, unit: "ratio" };
   const captionBoxResponse = await fetch(`${url}api/overlays/captions`, {
@@ -128,6 +176,7 @@ try {
       timed_overlays: [{
         id: "overlay-list-integration",
         type: "progressive_list",
+        style: { font_family: "华文中宋", font_size_ratio: 0.06 },
         items: [{
           start_word_index: listStartWordIndex,
           end_word_index: listEndWordIndex,
@@ -143,11 +192,54 @@ try {
   assert.equal(progressiveState.structuredOverlayTrack.groupCount, 1);
   assert.equal(progressiveState.playbackOverlays.length, 1);
   assert.equal(progressiveState.playbackOverlays[0].items.length, 1);
+  assert.equal(progressiveState.structuredOverlayTrack.groups[0].style.font_family, "华文中宋");
+  assert.equal(progressiveState.structuredOverlayTrack.groups[0].style.font_size_ratio, 0.06);
+  assert.ok(progressiveState.structuredOverlayTrack.groups[0].box.height < 0.30);
   assert.equal(
     progressiveState.structuredOverlayTrack.groups[0].items[0].source_text,
     sourceWords.slice(listStartWordIndex, listEndWordIndex + 1).map((word) => word.text).join(""),
   );
   assert.equal(readJson(project.overlaysPath).timed_overlays.length, 1);
+
+  const keywordStartWordIndex = Math.max(0, sourceWords.length - 2);
+  const keywordResponse = await fetch(`${url}api/overlays`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...progressiveState.overlays,
+      timed_overlays: [{
+        id: "overlay-keywords-integration",
+        type: "progressive_keywords",
+        layout: "auto",
+        enter_animation: "pop",
+        style: { font_family: "Microsoft YaHei", font_size_ratio: 0.09 },
+        items: [
+          {
+            start_word_index: keywordStartWordIndex,
+            end_word_index: keywordStartWordIndex,
+            display_text: "普通人",
+          },
+          {
+            start_word_index: keywordStartWordIndex + 1,
+            end_word_index: keywordStartWordIndex + 1,
+            display_text: "也能",
+          },
+        ],
+        source: "ai",
+      }],
+    }),
+  });
+  assert.equal(keywordResponse.status, 200);
+  const keywordState = await (await fetch(`${url}api/state`)).json();
+  assert.equal(keywordState.structuredOverlayTrack.groups[0].type, "progressive_keywords");
+  assert.equal(keywordState.structuredOverlayTrack.groups[0].layout, "auto");
+  assert.equal(keywordState.structuredOverlayTrack.groups[0].style.font_family, "Microsoft YaHei");
+  assert.equal(keywordState.structuredOverlayTrack.groups[0].style.font_size_ratio, 0.09);
+  assert.equal(keywordState.playbackOverlays.length, 2);
+  assert.equal(new Set(keywordState.playbackOverlays.map((overlay) => overlay.fontSize)).size, 1);
+  assert.equal(keywordState.playbackOverlays[1].enter_animation, "pop");
+  assert.equal(keywordState.playbackOverlays[1].items.length, 2);
+  assert.ok(keywordState.playbackOverlays[1].items.every((item) => item.box?.unit === "ratio"));
 
   const selectionEnd = Math.min(1, sourceWords.length - 1);
   const selectionEffectsResponse = await fetch(`${url}api/selection-effects`, {
