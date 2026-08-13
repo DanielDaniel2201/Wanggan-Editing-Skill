@@ -36,6 +36,28 @@ function brightPixels(videoPath, time) {
   return count;
 }
 
+function subtitleColorPixels(videoPath, time) {
+  const result = run("ffmpeg", [
+    "-v", "error",
+    "-ss", String(time),
+    "-i", videoPath,
+    "-frames:v", "1",
+    "-vf", "format=rgb24",
+    "-f", "rawvideo",
+    "pipe:1",
+  ], { encoding: null });
+  let white = 0;
+  let yellow = 0;
+  for (let index = 0; index < result.stdout.length; index += 3) {
+    const red = result.stdout[index];
+    const green = result.stdout[index + 1];
+    const blue = result.stdout[index + 2];
+    if (red >= 245 && green >= 245 && blue >= 245) white += 1;
+    if (red >= 245 && green >= 225 && blue >= 110 && blue <= 170) yellow += 1;
+  }
+  return { white, yellow };
+}
+
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "wanggan-caption-render-"));
 let passed = false;
 try {
@@ -68,7 +90,7 @@ try {
   fs.writeFileSync(subtitlePath, "1\n00:00:00,500 --> 00:00:02,100\n普通字幕验证继续\n", "utf8");
   saveEffects(effectsPath, [{
     effect_type: "large_bright",
-    start_word_index: 4,
+    start_word_index: 5,
     end_word_index: 5,
     source: "human",
   }]);
@@ -120,6 +142,9 @@ try {
   const assPath = path.join(tempDir, "render-overlays.ass");
   assert.ok(fs.existsSync(assPath));
   const ass = fs.readFileSync(assPath, "utf8");
+  assert.match(ass, /YCbCr Matrix: None/);
+  assert.match(ass, /Style: Default,[^\n]*,1,0,2,0,0,0,1/);
+  assert.match(ass, /\\bord1/);
   assert.match(ass, /\\fs\d+\\c&H008AF0FF/);
   assert.match(ass, /Style: Default,Microsoft YaHei/);
   assert.match(ass, /Dialogue: 0[^\n]*\\fn华文中宋/);
@@ -139,6 +164,10 @@ try {
   const during = brightPixels(outputPath, 1.7);
   assert.ok(duringKeywords > before + 20, `关键词期间亮像素没有显著增加 before=${before} duringKeywords=${duringKeywords}`);
   assert.ok(during > before + 20, `字幕期间亮像素没有显著增加 before=${before} during=${during}`);
+  const keywordColors = subtitleColorPixels(outputPath, 0.7);
+  const captionColors = subtitleColorPixels(outputPath, 1.7);
+  assert.ok(keywordColors.yellow > 20, `关键词没有保留接近 #FFF08A 的亮黄色像素 yellow=${keywordColors.yellow}`);
+  assert.ok(captionColors.white > 20, `字幕没有保留接近 #FFFFFF 的白色像素 white=${captionColors.white}`);
   passed = true;
   process.stdout.write(`wanggan subtitle render passed before=${before} during=${during}\n`);
 } finally {

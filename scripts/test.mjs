@@ -239,6 +239,8 @@ assert.ok(captionTrack.cues.every((cue) => cue.lines.length <= 2));
 assert.ok(captionTrack.cues.every((cue) => cue.layout_font_scale > 0 && cue.layout_font_scale <= 1));
 const ass = buildAss(captionProject, captionTrack);
 assert.match(ass, /PlayResX: 720/);
+assert.match(ass, /YCbCr Matrix: None/);
+assert.match(ass, /Style: Default,[^\n]*,2,0,2,0,0,0,1/);
 assert.match(ass, /Dialogue: 0/);
 assert.match(ass, /Microsoft YaHei/);
 assert.match(ass, /\\fn华文中宋/);
@@ -289,6 +291,7 @@ assert.deepEqual(compiledScreen.playbackCaptions.map((cue) => cue.text), ["重�
 assert.equal(compiledScreen.playbackOverlays.length, 2);
 const overlayAss = buildAss(captionProject, compiledScreen.captionTrack, compiledScreen.structuredTrack);
 assert.match(overlayAss, /Dialogue: 10/);
+assert.match(overlayAss, /\\bord1/);
 assert.match(overlayAss, /一、这是/);
 assert.match(overlayAss, /二、危险/);
 assert.doesNotMatch(overlayAss, /Dialogue: 0[^\n]*这是/);
@@ -336,6 +339,7 @@ assert.equal(keywordTrack.states[2].items.length, 3);
 const keywordAss = buildAss(captionProject, captionTrack, keywordTrack);
 assert.match(keywordAss, /\\an5\\pos\(180,213\)/);
 assert.match(keywordAss, /\\fs58\\c&H008AF0FF/);
+assert.match(keywordAss, /\\bord2/);
 assert.match(keywordAss, /\\fad\(180,0\)\\fscx85\\fscy85\\t\(0,180,\\fscx100\\fscy100\)/);
 assert.equal((keywordAss.match(/\\fad\(/g) || []).length, 3);
 

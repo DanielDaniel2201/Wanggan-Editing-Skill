@@ -102,7 +102,7 @@ try {
   const state = await stateResponse.json();
   assert.ok(state.words.length > 0);
   assert.ok(state.effects.length > 0);
-  assert.equal(state.renderEngineVersion, 16);
+  assert.equal(state.renderEngineVersion, 17);
   assert.ok(Array.isArray(state.playbackEffects));
   assert.ok(state.playbackEffects.length <= state.effects.length);
   assert.ok(Array.isArray(state.playbackCaptions));

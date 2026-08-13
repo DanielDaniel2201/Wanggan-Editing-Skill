@@ -209,6 +209,7 @@ node scripts/wanggan.mjs status --project "<任务目录>"
 - 长效果在所选词语的 `start` 到 `end` 之间线性缩放，结束时间点直接硬切回 `100%`
 - 放大时居中裁切，缩小时居中补纯黑边
 - 审查网页使用稳定画布显示视频帧，播放器控件不得进入画面缩放层
+- ASS 导出使用 `YCbCr Matrix: None` 保留字幕 RGB 颜色，描边按同一 `stroke_width_ratio` 的一半生成肉眼可见边；审查网页继续使用完整比例，不修改工程中的描边参数
 - 人工修改 AI 决定后保留 `source: ai`，同时写入 `human_modified: true`
 - 不覆盖输入视频、输入逐字稿或已经存在的输出文件
 - 不自动调用任何外部模型或要求额外模型密钥

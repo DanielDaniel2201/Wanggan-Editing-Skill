@@ -1184,12 +1184,17 @@ function escapeAssText(text) {
     .replace(/}/g, "\\}");
 }
 
+function assStrokeWidth(project, strokeWidthRatio) {
+  const minDimension = Math.min(project.displayWidth, project.displayHeight);
+  return Math.max(1, Math.round(minDimension * strokeWidthRatio * 0.5));
+}
+
 export function buildAss(project, captionTrack, structuredTrack = { states: [] }) {
   const style = captionTrack.style;
   const box = captionTrack.box;
   const centerX = Math.round(project.displayWidth * (box.x + box.width / 2));
   const bottomY = Math.round(project.displayHeight * (box.y + box.height));
-  const outline = Math.max(1, Math.round(Math.min(project.displayWidth, project.displayHeight) * style.stroke_width_ratio));
+  const outline = assStrokeWidth(project, style.stroke_width_ratio);
   const fontName = String(style.font_family).replace(/,/g, " ");
   const header = [
     "[Script Info]",
@@ -1198,7 +1203,7 @@ export function buildAss(project, captionTrack, structuredTrack = { states: [] }
     `PlayResY: ${project.displayHeight}`,
     "WrapStyle: 2",
     "ScaledBorderAndShadow: yes",
-    "YCbCr Matrix: TV.709",
+    "YCbCr Matrix: None",
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
@@ -1231,6 +1236,7 @@ export function buildAss(project, captionTrack, structuredTrack = { states: [] }
         : ""
     );
     if (state.type === "progressive_keywords") {
+      const outline = assStrokeWidth(project, state.style.stroke_width_ratio);
       for (const item of state.items) {
         const centerX = Math.round(project.displayWidth * (item.box.x + item.box.width / 2));
         const centerY = Math.round(project.displayHeight * (item.box.y + item.box.height / 2));
@@ -1241,7 +1247,7 @@ export function buildAss(project, captionTrack, structuredTrack = { states: [] }
           `\\fs${state.fontSize}`,
           `\\c${assColor(state.style.color)}`,
           `\\3c${assColor(state.style.stroke_color)}`,
-          `\\bord${state.strokeWidth}`,
+          `\\bord${outline}`,
           animationTags(item),
         ].join("");
         events.push(
@@ -1250,6 +1256,7 @@ export function buildAss(project, captionTrack, structuredTrack = { states: [] }
       }
       return events;
     }
+    const outline = assStrokeWidth(project, state.style.stroke_width_ratio);
     const leftX = Math.round(project.displayWidth * state.box.x);
     let topY = Math.round(project.displayHeight * state.box.y);
     for (const item of state.items) {
@@ -1261,7 +1268,7 @@ export function buildAss(project, captionTrack, structuredTrack = { states: [] }
           `\\fs${state.fontSize}`,
           `\\c${assColor(state.style.color)}`,
           `\\3c${assColor(state.style.stroke_color)}`,
-          `\\bord${state.strokeWidth}`,
+          `\\bord${outline}`,
           animationTags(item),
         ].join("");
         events.push(
