@@ -9,7 +9,7 @@
   <body>
     <header class="topbar">
       <div>
-        <p class="eyebrow">WANGGAN EDITING V2</p>
+        <p class="eyebrow">WANGGAN EDITING</p>
         <h1>网感剪辑审查台</h1>
       </div>
       <div class="topbar__actions">
@@ -89,14 +89,7 @@
           <h2>效果类型</h2>
         </div>
 
-        <div class="effect-buttons">
-          <button class="scale-button scale-button--in" data-selection-effect data-target="video.main" data-effect-type="short_emphasis" type="button" aria-pressed="false">短促重点</button>
-          <button class="scale-button scale-button--out" data-selection-effect data-target="video.main" data-effect-type="short_negative" type="button" aria-pressed="false">短促负面</button>
-          <button class="scale-button scale-button--in scale-button--long" data-selection-effect data-target="video.main" data-effect-type="long_emphasis" type="button" aria-pressed="false">长重点</button>
-          <button class="scale-button scale-button--out scale-button--long" data-selection-effect data-target="video.main" data-effect-type="long_negative" type="button" aria-pressed="false">长负面</button>
-          <button class="scale-button scale-button--caption" data-selection-effect data-target="overlay.captions" data-effect-type="large_bright" type="button" aria-pressed="false">大字号、亮颜色</button>
-          <button class="scale-button scale-button--clear" data-direct-effect data-clear-effect type="button">清除画面效果</button>
-        </div>
+        <div id="effectButtons" class="effect-buttons"></div>
 
         <div class="subtitle-actions" aria-label="字幕控制">
           <h3>字幕</h3>
@@ -117,11 +110,7 @@
         <div class="structured-actions" aria-label="结构化覆盖层控制">
           <div class="structured-actions__heading">
             <h3>结构化覆盖层</h3>
-            <div class="structured-actions__buttons">
-              <button id="newListButton" class="compact-button" data-structured-action type="button">新建清单</button>
-              <button id="newKeywordsButton" class="compact-button" data-structured-action type="button">新建关键词</button>
-              <button id="newImageButton" class="compact-button" data-structured-action type="button">新建贴图</button>
-            </div>
+            <div id="assetCreateButtons" class="structured-actions__buttons"></div>
           </div>
           <div id="structuredEditor" class="structured-editor"></div>
         </div>

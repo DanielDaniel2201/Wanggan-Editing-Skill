@@ -2,20 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import {
-  WangganError,
-  EFFECT_TARGETS,
-  effectDefinition,
-  loadEffects,
-  loadTranscript,
-  roundTime,
-  writeJson,
-} from "./core.mjs";
-import {
-  compileScreenOverlays,
-  loadOverlays,
-  writeOverlayAss,
-} from "./captions.mjs";
+import { WangganError, roundTime, writeJson } from "./core.mjs";
+import { compileProject, writeOverlayAss } from "./compiler.mjs";
 
 export function commandAvailable(command, args = ["-version"]) {
   const result = spawnSync(command, args, { encoding: "utf8", windowsHide: true });
@@ -109,49 +97,6 @@ function even(value) {
   return rounded % 2 === 0 ? rounded : rounded + 1;
 }
 
-export function buildScaleExpression(effects) {
-  const playbackEffects = compilePlaybackEffects(effects);
-  let expression = "1";
-  for (let index = playbackEffects.length - 1; index >= 0; index -= 1) {
-    const effect = playbackEffects[index];
-    const targetScale = roundTime(effect.scale_percent / 100);
-    const activeScale = effect.motion === "progressive"
-      ? `1+(${roundTime(targetScale - 1)})*((t-${effect.start})/${roundTime(effect.end - effect.start)})`
-      : String(targetScale);
-    expression = `if(gte(t,${effect.start})*lt(t,${effect.end}),${activeScale},${expression})`;
-  }
-  return expression;
-}
-
-export function compilePlaybackEffects(effects) {
-  const merged = [];
-  const videoEffects = effects.filter((effect) => effect.target === EFFECT_TARGETS.VIDEO_MAIN);
-  for (const effect of videoEffects) {
-    const previous = merged.at(-1);
-    const connects = previous
-      && previous.effect_type === effect.effect_type
-      && previous.end_word_index + 1 === effect.start_word_index;
-    if (connects) {
-      previous.end_word_index = effect.end_word_index;
-      previous.end = effect.end;
-      previous.text = `${previous.text || ""}${effect.text || ""}`;
-    } else {
-      merged.push({ ...effect });
-    }
-  }
-  return merged.map((effect) => {
-    const definition = effectDefinition(effect.effect_type);
-    if (!definition) throw new WangganError("无法编译未知效果", { effect });
-    return {
-      ...effect,
-      scale_percent: definition.scalePercent,
-      motion: definition.motion,
-      direction: definition.direction,
-      effect_label: definition.label,
-    };
-  });
-}
-
 export function scalePercentAtTime(effect, time) {
   if (!effect || time < effect.start || time >= effect.end) return 100;
   if (effect.motion !== "progressive") return effect.scale_percent;
@@ -161,14 +106,53 @@ export function scalePercentAtTime(effect, time) {
   return 100 + (effect.scale_percent - 100) * progress;
 }
 
-export function buildFilter(project, effects, options = {}) {
+export function buildScaleExpression(playbackEffects) {
+  let expression = "1";
+  for (let index = playbackEffects.length - 1; index >= 0; index -= 1) {
+    const effect = playbackEffects[index];
+    const targetScale = roundTime((effect.to_scale ?? effect.scale_percent / 100));
+    const fromScale = Number(effect.from_scale ?? 1);
+    const activeScale = effect.interpolation === "linear" || effect.motion === "progressive"
+      ? `${roundTime(fromScale)}+(${roundTime(targetScale - fromScale)})*((t-${effect.start})/${roundTime(effect.end - effect.start)})`
+      : String(targetScale);
+    expression = `if(gte(t,${effect.start})*lt(t,${effect.end}),${activeScale},${expression})`;
+  }
+  return expression;
+}
+
+export function buildChannelExpression(states, options = {}) {
+  const fromKey = options.fromKey;
+  const toKey = options.toKey;
+  const time = options.time || "t";
+  let expression = String(options.fallback ?? 1);
+  for (let index = states.length - 1; index >= 0; index -= 1) {
+    const state = states[index];
+    const from = Number(state[fromKey] ?? options.fallback ?? 1);
+    const to = Number(state[toKey] ?? options.fallback ?? 1);
+    const duration = Math.max(0.001, Number(state.end) - Number(state.start));
+    const active = state.interpolation === "linear"
+      ? `${roundTime(from)}+(${roundTime(to - from)})*((${time}-${state.start})/${roundTime(duration)})`
+      : String(roundTime(to));
+    expression = `if(gte(${time},${state.start})*lt(${time},${state.end}),${active},${expression})`;
+  }
+  return expression;
+}
+
+function visibilityExpression(overlay) {
+  let expression = `gte(t,${overlay.start})*lt(t,${overlay.end})`;
+  for (const range of overlay.suppression_ranges || []) {
+    expression += `*not(gte(t,${range.start})*lt(t,${range.end}))`;
+  }
+  return expression;
+}
+
+export function buildFilter(project, playbackEffects, options = {}) {
   const width = even(project.displayWidth);
   const height = even(project.displayHeight);
-  const playbackEffects = compilePlaybackEffects(effects);
-  const maxScale = Math.max(1, ...playbackEffects.map((effect) => effect.scale_percent / 100));
+  const maxScale = Math.max(1, ...playbackEffects.map((effect) => (effect.to_scale ?? effect.scale_percent / 100)));
   const padWidth = even(width * maxScale);
   const padHeight = even(height * maxScale);
-  const expression = buildScaleExpression(effects);
+  const expression = buildScaleExpression(playbackEffects);
   const videoFilter = `[0:v]scale=w='trunc(${width}*(${expression})/2)*2':h='trunc(${height}*(${expression})/2)*2':eval=frame:flags=lanczos,pad=${padWidth}:${padHeight}:(ow-iw)/2:(oh-ih)/2:black:eval=frame,crop=${width}:${height}:(iw-ow)/2:(ih-oh)/2,setsar=1,format=yuv420p`;
   const imageOverlays = Array.isArray(options.imageOverlays) ? options.imageOverlays : [];
   const overlayAssFile = options.overlayAssFile || options.captionAssFile;
@@ -182,16 +166,36 @@ export function buildFilter(project, effects, options = {}) {
   imageOverlays.forEach((overlay, index) => {
     const boxWidth = Math.max(2, Math.round(width * overlay.box.width));
     const boxHeight = Math.max(2, Math.round(height * overlay.box.height));
-    const boxX = Math.round(width * overlay.box.x);
-    const boxY = Math.round(height * overlay.box.y);
+    const centerX = Math.round(width * (overlay.box.x + overlay.box.width / 2));
+    const centerY = Math.round(height * (overlay.box.y + overlay.box.height / 2));
     const imageLabel = `image${index}`;
     const nextBase = `base${index + 1}`;
     const inputIndex = Number(overlay.input_index ?? index + 1);
+    const scaleStates = [
+      ...(overlay.effects?.scale || []),
+      ...(overlay.effects?.entryScale || []),
+    ];
+    const opacityStates = [
+      ...(overlay.effects?.opacity || []),
+      ...(overlay.effects?.entryOpacity || []),
+    ];
+    const scaleExpression = buildChannelExpression(scaleStates, {
+      fromKey: "from_scale",
+      toKey: "to_scale",
+      time: "t",
+      fallback: 1,
+    });
+    const opacityExpression = buildChannelExpression(opacityStates, {
+      fromKey: "from_opacity",
+      toKey: "to_opacity",
+      time: "N/30",
+      fallback: 1,
+    });
     filters.push(
-      `[${inputIndex}:v]scale=w=${boxWidth}:h=${boxHeight}:force_original_aspect_ratio=decrease:flags=lanczos,format=rgba,setpts=PTS-STARTPTS[${imageLabel}]`,
+      `[${inputIndex}:v]scale=w='max(2,trunc(${boxWidth}*(${scaleExpression})/2)*2)':h='max(2,trunc(${boxHeight}*(${scaleExpression})/2)*2)':force_original_aspect_ratio=decrease:eval=frame:flags=lanczos,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*(${opacityExpression})',setpts=PTS-STARTPTS[${imageLabel}]`,
     );
     filters.push(
-      `[${currentBase}][${imageLabel}]overlay=x='${boxX}+(${boxWidth}-overlay_w)/2':y='${boxY}+(${boxHeight}-overlay_h)/2':enable='gte(t,${overlay.start})*lt(t,${overlay.end})':shortest=0:repeatlast=1[${nextBase}]`,
+      `[${currentBase}][${imageLabel}]overlay=x='${centerX}-overlay_w/2':y='${centerY}-overlay_h/2':enable='${visibilityExpression(overlay)}':shortest=0:repeatlast=1[${nextBase}]`,
     );
     currentBase = nextBase;
   });
@@ -205,25 +209,24 @@ export function buildFilter(project, effects, options = {}) {
 }
 
 export async function renderProject(project, options = {}) {
-  const words = loadTranscript(project.transcriptPath);
-  const effects = loadEffects(project.effectsPath, words);
-  const overlays = loadOverlays(project.overlaysPath, words);
-  const compiledOverlays = compileScreenOverlays(project, words, overlays, effects);
-  const { captionTrack, structuredTrack, imageTrack } = compiledOverlays;
+  const ir = options.ir || await compileProject(project, options);
+  if (ir.profileLock && ir.profileLock.ok === false) {
+    throw new WangganError("Profile 与 lock 不一致，请先运行 profile sync", {
+      changes: ir.profileLock.changes,
+    });
+  }
   const outputPath = path.resolve(options.outputPath || project.outputPath);
   if (fs.existsSync(outputPath) && !options.overwrite) {
     throw new WangganError("输出文件已经存在，不会覆盖", { outputPath }, 409);
   }
-  const hasScreenOverlays = (captionTrack.enabled && captionTrack.cues.length)
-    || structuredTrack.states.length;
-  const overlayAssFile = hasScreenOverlays
-    ? path.basename(writeOverlayAss(project, captionTrack, structuredTrack))
+  const overlayAssFile = ir.hasAss
+    ? path.basename(writeOverlayAss(project, ir))
     : null;
-  const renderImages = imageTrack.states.map((overlay, index) => ({
+  const renderImages = ir.playbackImageOverlays.map((overlay, index) => ({
     ...overlay,
     input_index: index + 1,
   }));
-  const filter = buildFilter(project, effects, { overlayAssFile, imageOverlays: renderImages });
+  const filter = buildFilter(project, ir.playbackEffects, { overlayAssFile, imageOverlays: renderImages });
   const filterPath = path.join(project.projectDir, "render-filter.txt");
   fs.writeFileSync(filterPath, `${filter}\n`, "utf8");
   const statusBase = { outputPath, startedAt: new Date().toISOString(), progress: 0 };
@@ -233,7 +236,7 @@ export async function renderProject(project, options = {}) {
   try {
     await runProcess("ffmpeg", [
       "-y", "-v", "error", "-i", project.videoPath,
-      ...renderImages.flatMap((overlay) => ["-i", overlay.resolved_image_path]),
+      ...renderImages.flatMap((overlay) => ["-loop", "1", "-framerate", "30", "-i", overlay.resolved_image_path]),
       "-filter_complex_script", filterPath,
       "-map", "[v]", "-map", "0:a?",
       "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
@@ -272,18 +275,18 @@ export async function renderProject(project, options = {}) {
       completedAt: new Date().toISOString(),
       media: outputMedia,
       captions: {
-        enabled: captionTrack.enabled,
-        source: captionTrack.source,
-        cueCount: captionTrack.cueCount,
+        enabled: ir.captionTrack.enabled,
+        source: ir.captionTrack.source,
+        cueCount: ir.captionTrack.cueCount,
       },
       structuredOverlays: {
-        enabled: structuredTrack.enabled,
-        groupCount: structuredTrack.groupCount,
-        stateCount: structuredTrack.states.length,
+        enabled: ir.structuredOverlayTrack.enabled,
+        groupCount: ir.structuredOverlayTrack.groupCount,
+        stateCount: ir.playbackOverlays.length,
       },
       imageOverlays: {
-        enabled: imageTrack.enabled,
-        count: imageTrack.states.length,
+        enabled: ir.imageOverlayTrack.enabled,
+        count: ir.playbackImageOverlays.length,
       },
     };
     writeJson(project.renderStatusPath, complete);
@@ -298,4 +301,8 @@ export async function renderProject(project, options = {}) {
     });
     throw error;
   }
+}
+
+export function compilePlaybackEffects(playbackEffects) {
+  return playbackEffects;
 }

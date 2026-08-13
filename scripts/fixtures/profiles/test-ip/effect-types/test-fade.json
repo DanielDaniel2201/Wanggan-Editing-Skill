@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "kind": "effect_type",
+  "id": "test-ip.fade",
+  "operator": "core.style.opacity",
+  "requires_capabilities": ["style.opacity"],
+  "timing_models": ["word_range"],
+  "writes_channels": ["style.opacity"],
+  "overlap_policy": "exclusive-per-channel",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["from_opacity", "to_opacity", "interpolation"],
+    "properties": {
+      "from_opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+      "to_opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+      "interpolation": { "enum": ["step", "linear"] }
+    }
+  },
+  "ui": {
+    "label": "测试淡出",
+    "presets": [
+      {
+        "id": "fade-out",
+        "label": "测试淡出",
+        "className": "scale-button--out",
+        "config": {
+          "from_opacity": 1,
+          "to_opacity": 0.35,
+          "interpolation": "linear"
+        }
+      }
+    ]
+  }
+}

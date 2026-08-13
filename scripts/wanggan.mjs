@@ -6,36 +6,28 @@ import { pathToFileURL } from "node:url";
 import {
   WangganError,
   defaultEditorState,
-  loadEffects,
-  loadProject,
   loadTranscript,
-  projectState,
   readJson,
-  resolveEffect,
-  saveEffects,
-  unwrapEffectsInput,
-  validateEffects,
   writeJson,
 } from "./lib/core.mjs";
+import { loadAjvModules } from "./lib/schema.mjs";
+import { parseSrt } from "./lib/srt.mjs";
+import { alignCuesToWords } from "./lib/timeline.mjs";
+import { loadProfile, writeProfileLock } from "./lib/profile-loader.mjs";
 import {
-  commandAvailable,
-  ensurePreview,
-  probeMedia,
-  renderProject,
-} from "./lib/render.mjs";
-import {
-  compileCaptionTrack,
-  compileScreenOverlays,
-  defaultOverlays,
-  loadOverlays,
-  saveOverlays,
-} from "./lib/captions.mjs";
+  emptyComposition,
+  importCompositionFragment,
+  loadComposition,
+  saveComposition,
+} from "./lib/composition.mjs";
+import { loadProjectContext, loadProjectRecord } from "./lib/project.mjs";
+import { commandAvailable, ensurePreview, probeMedia, renderProject } from "./lib/render.mjs";
+import { compileProject } from "./lib/compiler.mjs";
 import { startServer } from "./server.mjs";
 
-function parseArgs(argv) {
-  const command = argv[0] || "help";
+function parseFlags(argv) {
   const flags = {};
-  for (let index = 1; index < argv.length; index += 1) {
+  for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (!token.startsWith("--")) throw new WangganError(`无法识别参数：${token}`);
     const key = token.slice(2);
@@ -46,7 +38,15 @@ function parseArgs(argv) {
       index += 1;
     }
   }
-  return { command, flags };
+  return flags;
+}
+
+function parseArgs(argv) {
+  const command = argv[0] || "help";
+  if (command === "profile" && argv[1] && !argv[1].startsWith("--")) {
+    return { command: `profile ${argv[1]}`, flags: parseFlags(argv.slice(2)) };
+  }
+  return { command, flags: parseFlags(argv.slice(1)) };
 }
 
 function required(flags, key) {
@@ -67,29 +67,31 @@ function ensureFile(filePath, label) {
 }
 
 function help() {
-  process.stdout.write(`网感剪辑 V2\n\n`);
+  process.stdout.write(`网感剪辑\n\n`);
   process.stdout.write(`命令\n`);
   process.stdout.write(`  doctor\n`);
-  process.stdout.write(`  init --video <path> --transcript <path> [--subtitle <srt>] --project <dir>\n`);
-  process.stdout.write(`  import --project <dir> --input <effects.json>\n`);
-  process.stdout.write(`  import-overlays --project <dir> --input <overlays.json>\n`);
-  process.stdout.write(`  add --project <dir> --start <seconds> --end <seconds> --effect-type <type>\n`);
+  process.stdout.write(`  init --video <path> --words <path> --srt <path> --profile base --project <dir>\n`);
+  process.stdout.write(`  import --project <dir> --input <composition.json>\n`);
   process.stdout.write(`  validate --project <dir>\n`);
   process.stdout.write(`  status --project <dir>\n`);
   process.stdout.write(`  serve --project <dir> [--port 8911]\n`);
   process.stdout.write(`  render --project <dir> [--output <path>]\n`);
+  process.stdout.write(`  profile sync --project <dir>\n`);
 }
 
-function doctor() {
+async function doctor() {
   const nodeMajor = Number(process.versions.node.split(".")[0]);
   const ffmpeg = commandAvailable("ffmpeg");
   const ffprobe = commandAvailable("ffprobe");
+  const ajv = await loadAjvModules();
   const result = {
-    ok: nodeMajor >= 18 && ffmpeg.ok && ffprobe.ok,
+    ok: nodeMajor >= 18 && ffmpeg.ok && ffprobe.ok && ajv.ok,
     node: process.version,
     nodeSupported: nodeMajor >= 18,
     ffmpeg: ffmpeg.ok ? ffmpeg.output.split(/\r?\n/)[0] : "missing",
     ffprobe: ffprobe.ok ? ffprobe.output.split(/\r?\n/)[0] : "missing",
+    ajv: ajv.ok ? "ok" : ajv.error,
+    ajvHint: ajv.ok ? null : ajv.hint,
   };
   print(result);
   if (!result.ok) process.exitCode = 1;
@@ -97,14 +99,16 @@ function doctor() {
 
 async function initProject(flags) {
   const videoPath = ensureFile(required(flags, "video"), "视频");
-  const transcriptPath = ensureFile(required(flags, "transcript"), "逐字稿");
-  const subtitlePath = flags.subtitle ? ensureFile(flags.subtitle, "SRT 字幕") : null;
+  const wordsPath = ensureFile(required(flags, "words"), "逐字稿");
+  const srtPath = ensureFile(required(flags, "srt"), "SRT");
+  const profileInput = required(flags, "profile");
   const projectDir = path.resolve(required(flags, "project"));
   const projectPath = path.join(projectDir, "project.json");
   if (fs.existsSync(projectPath)) {
     throw new WangganError("任务目录已经包含 project.json，不会覆盖", { projectPath }, 409);
   }
-  const words = loadTranscript(transcriptPath);
+  const profile = await loadProfile(profileInput, { allowProfileCode: Boolean(flags["allow-profile-code"]) });
+  const words = loadTranscript(wordsPath);
   const media = probeMedia(videoPath);
   if (words.at(-1).end > media.duration + 0.2) {
     throw new WangganError("逐字稿结束时间超过视频时长", {
@@ -112,180 +116,179 @@ async function initProject(flags) {
       videoDuration: media.duration,
     });
   }
+  const srtText = fs.readFileSync(srtPath);
+  if (srtText.includes(0)) {
+    // keep binary check light; UTF-8 decode below
+  }
+  const cues = alignCuesToWords(parseSrt(srtText.toString("utf8"), { duration: media.duration }), words);
   fs.mkdirSync(projectDir, { recursive: true });
   const previewCandidate = path.join(projectDir, "preview.mp4");
   const previewVideoPath = await ensurePreview(videoPath, media, previewCandidate);
   const baseName = path.basename(videoPath, path.extname(videoPath));
   const project = {
-    version: 2,
-    createdAt: new Date().toISOString(),
-    videoPath,
-    transcriptPath,
-    subtitlePath,
+    version: 3,
+    created_at: new Date().toISOString(),
+    inputs: {
+      video: { path: videoPath },
+      words: { path: wordsPath },
+      captions: {
+        path: srtPath,
+        cues: cues.map((cue) => ({
+          id: cue.id,
+          start: cue.start,
+          end: cue.end,
+          text: cue.text,
+          start_word_index: cue.start_word_index,
+          end_word_index: cue.end_word_index,
+        })),
+      },
+    },
+    profile: {
+      id: profile.id,
+      path: profile.dir,
+      lock_file: "profile-lock.json",
+    },
+    composition_file: "composition.json",
+    editor_state_file: "editor-state.json",
+    render_status_file: "render-status.json",
+    output_path: path.join(projectDir, `${baseName}-wanggan.mp4`),
     previewVideoPath,
-    outputPath: path.join(projectDir, `${baseName}-wanggan.mp4`),
-    effectsFile: "effects.json",
-    overlaysFile: "overlays.json",
-    editorStateFile: "editor-state.json",
-    renderStatusFile: "render-status.json",
     duration: media.duration,
     displayWidth: media.displayWidth,
     displayHeight: media.displayHeight,
     sourceMedia: media,
   };
   writeJson(projectPath, project);
-  saveEffects(path.join(projectDir, "effects.json"), []);
-  saveOverlays(path.join(projectDir, "overlays.json"), defaultOverlays());
-  writeJson(path.join(projectDir, "editor-state.json"), defaultEditorState());
-  writeJson(path.join(projectDir, "render-status.json"), { state: "idle" });
-  const captionTrack = compileCaptionTrack(
-    { ...project, projectDir, overlaysPath: path.join(projectDir, "overlays.json") },
-    words,
-    defaultOverlays(),
-  );
+  const record = loadProjectRecord(projectDir);
+  const composition = emptyComposition(profile);
+  saveComposition(record.compositionPath, composition, profile, words, record);
+  writeProfileLock(record.profileLockPath, profile);
+  writeJson(record.editorStatePath, defaultEditorState());
+  writeJson(record.renderStatusPath, { state: "idle" });
   print({
     ok: true,
     projectPath,
     wordCount: words.length,
+    cueCount: cues.length,
+    profile: { id: profile.id, version: profile.version, digest: profile.digest },
     media,
     previewVideoPath,
-    outputPath: project.outputPath,
-    captions: {
-      enabled: false,
-      source: captionTrack.source,
-      sourcePath: captionTrack.sourcePath,
-      cueCount: captionTrack.cueCount,
-    },
+    outputPath: project.output_path,
   });
 }
 
-function importEffects(flags) {
-  const project = loadProject(required(flags, "project"));
-  const inputPath = ensureFile(required(flags, "input"), "效果文件");
-  const words = loadTranscript(project.transcriptPath);
-  const inputs = unwrapEffectsInput(readJson(inputPath));
-  const effects = validateEffects(inputs, words, { defaultSource: "ai" });
-  saveEffects(project.effectsPath, effects);
-  print({ ok: true, effectCount: effects.length, effects });
-}
-
-function importOverlays(flags) {
-  const project = loadProject(required(flags, "project"));
-  const inputPath = ensureFile(required(flags, "input"), "覆盖层文件");
-  const words = loadTranscript(project.transcriptPath);
-  const overlays = saveOverlays(project.overlaysPath, readJson(inputPath), words);
+async function importComposition(flags) {
+  const context = await loadProjectContext(required(flags, "project"), {
+    allowProfileCode: Boolean(flags["allow-profile-code"]),
+  });
+  const inputPath = ensureFile(required(flags, "input"), "Composition 文件");
+  const current = loadComposition(context.project.compositionPath, context.profile, context.words, context.project);
+  const next = importCompositionFragment(current, readJson(inputPath), context.profile, context.words, context.project);
+  saveComposition(context.project.compositionPath, next, context.profile, context.words, context.project);
   print({
     ok: true,
-    overlaysVersion: overlays.version,
-    timedOverlayCount: overlays.timed_overlays.length,
-    overlays,
+    assetCount: next.assets.length,
+    effectCount: next.effects.length,
   });
 }
 
-function addEffect(flags) {
-  const project = loadProject(required(flags, "project"));
-  const words = loadTranscript(project.transcriptPath);
-  const current = loadEffects(project.effectsPath, words);
-  const candidate = resolveEffect({
-    start: required(flags, "start"),
-    end: required(flags, "end"),
-    effect_type: required(flags, "effect-type"),
-    source: flags.source || "ai",
-  }, words, { id: `effect-${String(current.length + 1).padStart(3, "0")}` });
-  const effects = validateEffects(candidate ? [...current, candidate] : current, words);
-  saveEffects(project.effectsPath, effects);
-  print({ ok: true, effectCount: effects.length, added: candidate });
-}
-
-function validateProject(flags) {
-  const project = loadProject(required(flags, "project"));
-  const state = projectState(project);
-  const overlays = loadOverlays(project.overlaysPath, state.words);
-  const compiledOverlays = compileScreenOverlays(project, state.words, overlays, state.effects);
-  const { captionTrack, structuredTrack, imageTrack } = compiledOverlays;
+async function validateProject(flags) {
+  const ir = await compileProject(required(flags, "project"), {
+    allowProfileCode: Boolean(flags["allow-profile-code"]),
+  });
   print({
-    ok: true,
-    wordCount: state.words.length,
-    effectCount: state.effects.length,
-    duration: state.project.duration,
-    outputPath: state.project.outputPath,
-    captions: {
-      enabled: captionTrack.enabled,
-      source: captionTrack.source,
-      sourcePath: captionTrack.sourcePath,
-      cueCount: captionTrack.cueCount,
-    },
+    ok: ir.profileLock.ok,
+    profileLock: ir.profileLock,
+    wordCount: ir.words.length,
+    assetCount: ir.composition.assets.length,
+    effectCount: ir.composition.effects.length,
+    duration: ir.project.duration,
+    outputPath: ir.project.outputPath,
+    captions: ir.captionTrack,
     structuredOverlays: {
-      enabled: structuredTrack.enabled,
-      groupCount: structuredTrack.groupCount,
-      stateCount: structuredTrack.states.length,
+      enabled: ir.structuredOverlayTrack.enabled,
+      groupCount: ir.structuredOverlayTrack.groupCount,
+      stateCount: ir.playbackOverlays.length,
     },
     imageOverlays: {
-      enabled: imageTrack.enabled,
-      count: imageTrack.states.length,
+      enabled: ir.imageOverlayTrack.enabled,
+      count: ir.playbackImageOverlays.length,
     },
   });
+  if (!ir.profileLock.ok) process.exitCode = 1;
 }
 
-function fullProjectState(projectInput) {
-  const project = typeof projectInput === "string" ? loadProject(projectInput) : projectInput;
-  const state = projectState(project);
-  const overlays = loadOverlays(project.overlaysPath, state.words);
-  const compiledOverlays = compileScreenOverlays(project, state.words, overlays, state.effects);
-  const { captionTrack, structuredTrack, imageTrack } = compiledOverlays;
-  return {
-    ...state,
-    overlays,
-    captionTrack: {
-      enabled: captionTrack.enabled,
-      source: captionTrack.source,
-      sourcePath: captionTrack.sourcePath,
-      cueCount: captionTrack.cueCount,
+async function statusProject(flags) {
+  const ir = await compileProject(required(flags, "project"), {
+    allowProfileCode: Boolean(flags["allow-profile-code"]),
+  });
+  print({
+    project: {
+      version: ir.project.version,
+      videoPath: ir.project.videoPath,
+      transcriptPath: ir.project.transcriptPath,
+      subtitlePath: ir.project.subtitlePath,
+      outputPath: ir.project.outputPath,
+      duration: ir.project.duration,
+      displayWidth: ir.project.displayWidth,
+      displayHeight: ir.project.displayHeight,
     },
-    structuredOverlayTrack: {
-      enabled: structuredTrack.enabled,
-      groupCount: structuredTrack.groupCount,
-      groups: structuredTrack.groups,
-      suppressionRanges: structuredTrack.suppressionRanges,
-    },
-    imageOverlayTrack: {
-      enabled: imageTrack.enabled,
-      groupCount: imageTrack.groupCount,
-      groups: imageTrack.groups,
-    },
-    playbackOverlays: compiledOverlays.playbackOverlays,
-    playbackImageOverlays: compiledOverlays.playbackImageOverlays,
-  };
+    profile: ir.profile,
+    profileLock: ir.profileLock,
+    words: ir.words,
+    composition: ir.composition,
+    captionTrack: ir.captionTrack,
+    structuredOverlayTrack: ir.structuredOverlayTrack,
+    imageOverlayTrack: ir.imageOverlayTrack,
+    playbackOverlays: ir.playbackOverlays,
+    playbackImageOverlays: ir.playbackImageOverlays,
+  });
 }
 
 async function serve(flags) {
-  const project = loadProject(required(flags, "project"));
-  const result = await startServer(project, Number(flags.port || 8911));
-  print({ ok: true, url: result.url, projectPath: project.projectPath });
+  const context = await loadProjectContext(required(flags, "project"), {
+    allowProfileCode: Boolean(flags["allow-profile-code"]),
+  });
+  const result = await startServer(context, Number(flags.port || 8911));
+  print({ ok: true, url: result.url, projectPath: context.project.projectPath });
   const close = () => result.server.close(() => process.exit(0));
   process.on("SIGINT", close);
   process.on("SIGTERM", close);
 }
 
 async function render(flags) {
-  const project = loadProject(required(flags, "project"));
-  const result = await renderProject(project, { outputPath: flags.output });
+  const context = await loadProjectContext(required(flags, "project"), {
+    allowProfileCode: Boolean(flags["allow-profile-code"]),
+  });
+  const result = await renderProject(context.project, {
+    outputPath: flags.output,
+    context,
+  });
   print(result);
+}
+
+async function syncProfile(flags) {
+  const context = await loadProjectContext(required(flags, "project"), {
+    allowProfileCode: Boolean(flags["allow-profile-code"]),
+    allowProfileMismatch: true,
+  });
+  loadComposition(context.project.compositionPath, context.profile, context.words, context.project);
+  const lock = writeProfileLock(context.project.profileLockPath, context.profile);
+  print({ ok: true, lock });
 }
 
 export async function main(argv = process.argv.slice(2)) {
   const { command, flags } = parseArgs(argv);
   switch (command) {
     case "help": help(); break;
-    case "doctor": doctor(); break;
+    case "doctor": await doctor(); break;
     case "init": await initProject(flags); break;
-    case "import": importEffects(flags); break;
-    case "import-overlays": importOverlays(flags); break;
-    case "add": addEffect(flags); break;
-    case "validate": validateProject(flags); break;
-    case "status": print(fullProjectState(required(flags, "project"))); break;
+    case "import": await importComposition(flags); break;
+    case "validate": await validateProject(flags); break;
+    case "status": await statusProject(flags); break;
     case "serve": await serve(flags); break;
     case "render": await render(flags); break;
+    case "profile sync": await syncProfile(flags); break;
     default: throw new WangganError(`未知命令：${command}`);
   }
 }

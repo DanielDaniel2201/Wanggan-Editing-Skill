@@ -1,0 +1,4 @@
+interface:
+  display_name: "网感剪辑"
+  short_description: "Profile 驱动的口播视频资产与特效组合审查和导出工具"
+  default_prompt: "Use $wanggan-editing to create and review a Profile-driven talking-head video composition from video, words JSON, and SRT."

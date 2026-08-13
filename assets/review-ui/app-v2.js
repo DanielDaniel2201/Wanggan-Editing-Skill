@@ -13,8 +13,8 @@ const elements = {
   subtitleText: document.querySelector("#subtitleText"),
   subtitleResizeHandle: document.querySelector("#subtitleResizeHandle"),
   transcript: document.querySelector("#transcript"),
-  directEffectButtons: [...document.querySelectorAll("[data-direct-effect]")],
-  selectionEffectButtons: [...document.querySelectorAll("[data-selection-effect]")],
+  effectButtons: document.querySelector("#effectButtons"),
+  assetCreateButtons: document.querySelector("#assetCreateButtons"),
   saveStatus: document.querySelector("#saveStatus"),
   connectionStatus: document.querySelector("#connectionStatus"),
   activeEffectBadge: document.querySelector("#activeEffectBadge"),
@@ -27,9 +27,6 @@ const elements = {
   fontTargetLabel: document.querySelector("#fontTargetLabel"),
   fontFamilySelect: document.querySelector("#fontFamilySelect"),
   structuredEditor: document.querySelector("#structuredEditor"),
-  newListButton: document.querySelector("#newListButton"),
-  newKeywordsButton: document.querySelector("#newKeywordsButton"),
-  newImageButton: document.querySelector("#newImageButton"),
   saveProjectButton: document.querySelector("#saveProjectButton"),
   renderButton: document.querySelector("#renderButton"),
 };
@@ -42,7 +39,7 @@ let playbackCaptions = [];
 let playbackOverlays = [];
 let playbackImageOverlays = [];
 let renderEngineCompatible = false;
-const requiredRenderEngineVersion = 18;
+const requiredRenderEngineVersion = 20;
 const selectedWords = new Set();
 let dragging = false;
 let paintShouldSelect = true;
@@ -142,11 +139,38 @@ function selectionInfo() {
   return { indexes, start: indexes[0], end: indexes.at(-1), contiguous };
 }
 
-function effectForWord(wordIndex, target) {
-  return state?.effects.find((effect) => (
-    effect.target === target
-    &&
-    wordIndex >= effect.start_word_index && wordIndex <= effect.end_word_index
+function assetTypeDef(typeId) {
+  return state?.catalog?.assetTypes?.find((item) => item.id === typeId) || null;
+}
+
+function effectTypeDef(typeId) {
+  return state?.catalog?.effectTypes?.find((item) => item.id === typeId) || null;
+}
+
+function systemAssetId(capability) {
+  const listed = state?.catalog?.systemAssets || [];
+  for (const item of listed) {
+    if ((assetTypeDef(item.type)?.capabilities || []).includes(capability)) return item.id;
+  }
+  return listed[0]?.id || null;
+}
+
+function configsEqual(left, right) {
+  return JSON.stringify(left || {}) === JSON.stringify(right || {});
+}
+
+function wordRangeEffect(effect, wordIndex) {
+  return effect.timing?.kind === "word_range"
+    && wordIndex >= effect.timing.start_word_index
+    && wordIndex <= effect.timing.end_word_index;
+}
+
+function effectForWord(wordIndex, assetId, typeId = null, config = null) {
+  return state?.composition?.effects.find((effect) => (
+    effect.target.asset_id === assetId
+    && (!typeId || effect.type === typeId)
+    && (!config || configsEqual(effect.config, config))
+    && wordRangeEffect(effect, wordIndex)
   )) || null;
 }
 
@@ -166,12 +190,132 @@ function imageOverlayForWord(wordIndex) {
   )) || null;
 }
 
-function selectionHasEffect(range, target, effectType) {
+function selectionHasEffect(range, assetId, typeId, config) {
   if (!range?.contiguous) return false;
   for (let wordIndex = range.start; wordIndex <= range.end; wordIndex += 1) {
-    if (effectForWord(wordIndex, target)?.effect_type !== effectType) return false;
+    if (!effectForWord(wordIndex, assetId, typeId, config)) return false;
   }
   return true;
+}
+
+function compatibleEffectTypes(capabilities) {
+  return (state?.catalog?.effectTypes || []).filter((effectType) => (
+    (effectType.timing_models || []).includes("word_range")
+    &&
+    selectableEffectAssets().some((asset) => (
+      (effectType.requires_capabilities || []).every((capability) => (
+        (assetTypeDef(asset.type)?.capabilities || []).includes(capability)
+      ))
+    ))
+  ));
+}
+
+function selectableEffectAssets() {
+  const assets = [];
+  const range = selectionInfo();
+  if (range?.contiguous) {
+    const structured = structuredItemForWord(range.start);
+    if (structured) {
+      const asset = state.composition.assets.find((item) => item.id === structured.group.id);
+      if (asset) assets.push(asset);
+    }
+    const image = imageOverlayForWord(range.start);
+    if (image) {
+      const asset = state.composition.assets.find((item) => item.id === image.id);
+      if (asset) assets.push(asset);
+    }
+  }
+  for (const asset of state.composition.assets.filter((item) => item.origin?.created_by === "system")) {
+    if (!assets.some((candidate) => candidate.id === asset.id)) assets.push(asset);
+  }
+  return assets;
+}
+
+function selectedAssetCapabilities() {
+  const range = selectionInfo();
+  const capabilities = new Set();
+  if (range?.contiguous) {
+    const structured = structuredItemForWord(range.start);
+    if (structured) {
+      for (const capability of assetTypeDef(structured.group.type)?.capabilities || []) capabilities.add(capability);
+    }
+    const image = imageOverlayForWord(range.start);
+    if (image) {
+      const asset = state.composition.assets.find((item) => item.id === image.id);
+      for (const capability of assetTypeDef(asset?.type)?.capabilities || []) capabilities.add(capability);
+    }
+  }
+  for (const asset of state.composition.assets.filter((item) => item.origin?.created_by === "system")) {
+    for (const capability of assetTypeDef(asset.type)?.capabilities || []) capabilities.add(capability);
+  }
+  return [...capabilities];
+}
+
+function defaultTargetForEffect(effectType) {
+  const required = effectType.requires_capabilities || [];
+  const candidates = selectableEffectAssets().filter((asset) => (
+    asset.enabled !== false
+    && required.every((capability) => (assetTypeDef(asset.type)?.capabilities || []).includes(capability))
+  ));
+  const selectedOverlay = candidates.find((asset) => asset.origin?.created_by !== "system");
+  if (selectedOverlay) return selectedOverlay.id;
+  const preferredSource = effectType.ui?.preferred_target_source;
+  const preferred = candidates.find((asset) => (
+    !preferredSource || (assetTypeDef(asset.type)?.source_kinds || []).includes(preferredSource)
+  ));
+  return preferred?.id || candidates[0]?.id || null;
+}
+
+function renderEffectCatalog() {
+  if (!elements.effectButtons || !state?.catalog) return;
+  const capabilities = selectedAssetCapabilities();
+  const fragment = document.createDocumentFragment();
+  for (const effectType of compatibleEffectTypes(capabilities)) {
+    const presets = effectType.ui?.presets?.length
+      ? effectType.ui.presets
+      : [{ id: effectType.id, label: effectType.ui?.label || effectType.id, config: {} }];
+    for (const preset of presets) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `scale-button ${preset.className || ""}`.trim();
+      button.dataset.selectionEffect = "";
+      button.dataset.effectTypeId = effectType.id;
+      button.dataset.presetId = preset.id;
+      button.textContent = preset.label;
+      button.addEventListener("click", () => void toggleSelectionEffect(effectType, preset, button));
+      fragment.append(button);
+    }
+  }
+  const videoType = assetTypeDef(state.composition.assets.find((item) => item.id === systemAssetId("transform.scale"))?.type);
+  if (videoType?.ui?.clear_label) {
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "scale-button scale-button--clear";
+    clear.dataset.directEffect = "";
+    clear.dataset.clearEffect = "";
+    clear.textContent = videoType.ui.clear_label;
+    clear.addEventListener("click", () => void clearSelectedEffects(videoType.ui.clear_channels || ["transform.scale"]));
+    fragment.append(clear);
+  }
+  elements.effectButtons.replaceChildren(fragment);
+  renderControls();
+}
+
+function renderAssetCreateButtons() {
+  if (!elements.assetCreateButtons || !state?.catalog) return;
+  const fragment = document.createDocumentFragment();
+  for (const assetType of state.catalog.assetTypes) {
+    if (!assetType.ui?.create_from_selection) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "compact-button";
+    button.dataset.structuredAction = "";
+    button.dataset.assetTypeId = assetType.id;
+    button.textContent = assetType.ui.create_label || assetType.ui.label || assetType.id;
+    button.addEventListener("click", () => void createAssetFromSelection(assetType));
+    fragment.append(button);
+  }
+  elements.assetCreateButtons.replaceChildren(fragment);
 }
 
 function renderTranscript() {
@@ -226,39 +370,51 @@ function renderTranscriptClasses() {
   if (!state) return;
   for (const button of elements.transcript.querySelectorAll(".word")) {
     const wordIndex = Number(button.dataset.wordIndex);
-    const videoEffect = effectForWord(wordIndex, "video.main");
-    const captionEffect = effectForWord(wordIndex, "overlay.captions");
+    const effects = state.composition.effects.filter((effect) => wordRangeEffect(effect, wordIndex));
+    const scaleEffect = effects.find((effect) => (
+      (effectTypeDef(effect.type)?.writes_channels || []).includes("transform.scale")
+    ));
+    const textEffect = effects.find((effect) => (
+      (effectTypeDef(effect.type)?.writes_channels || []).some((channel) => channel.startsWith("style."))
+    ));
     const structuredItem = structuredItemForWord(wordIndex);
     const imageOverlay = imageOverlayForWord(wordIndex);
-    button.classList.toggle("word--in", Boolean(videoEffect?.effect_type.endsWith("emphasis")));
-    button.classList.toggle("word--out", Boolean(videoEffect?.effect_type.endsWith("negative")));
-    button.classList.toggle("word--long", Boolean(videoEffect?.effect_type.startsWith("long_")));
-    button.classList.toggle("word--caption", Boolean(captionEffect));
+    const toScale = Number(scaleEffect?.config?.to_scale);
+    button.classList.toggle("word--in", Number.isFinite(toScale) && toScale > 1);
+    button.classList.toggle("word--out", Number.isFinite(toScale) && toScale < 1);
+    button.classList.toggle("word--long", scaleEffect?.config?.interpolation === "linear");
+    button.classList.toggle("word--caption", Boolean(textEffect));
     button.classList.toggle("word--structured", Boolean(structuredItem || imageOverlay));
     button.classList.toggle("word--selected", selectedWords.has(wordIndex));
     button.classList.toggle("word--current", wordIndex === currentWordIndex);
     button.title = [
-      videoEffect?.effect_type,
-      captionEffect?.effect_type,
-      structuredItem?.group?.type,
-      imageOverlay?.type,
+      scaleEffect && effectTypeDef(scaleEffect.type)?.ui?.label,
+      ...effects
+        .filter((effect) => effect.id !== scaleEffect?.id)
+        .map((effect) => effectTypeDef(effect.type)?.ui?.label),
+      structuredItem && assetTypeDef(structuredItem.group.type)?.ui?.label,
+      imageOverlay && "贴图",
     ].filter(Boolean).join(" + ");
   }
 }
 
 function renderControls() {
   const range = selectionInfo();
-  for (const button of elements.directEffectButtons) {
-    button.disabled = selectedWords.size === 0 || savingEffect;
-  }
-  for (const button of elements.selectionEffectButtons) {
-    const selected = selectionHasEffect(range, button.dataset.target, button.dataset.effectType);
+  for (const button of elements.effectButtons?.querySelectorAll("[data-selection-effect]") || []) {
+    const effectType = effectTypeDef(button.dataset.effectTypeId);
+    const preset = (effectType?.ui?.presets || []).find((item) => item.id === button.dataset.presetId)
+      || { config: {} };
+    const target = defaultTargetForEffect(effectType || { requires_capabilities: [] });
+    const selected = selectionHasEffect(range, target, button.dataset.effectTypeId, preset.config);
     button.disabled = !range?.contiguous || savingEffect;
     button.setAttribute("aria-pressed", String(selected));
   }
-  elements.newListButton.disabled = !range?.contiguous || savingOverlays;
-  elements.newKeywordsButton.disabled = !range?.contiguous || savingOverlays;
-  elements.newImageButton.disabled = !range?.contiguous || savingOverlays;
+  for (const button of elements.effectButtons?.querySelectorAll("[data-direct-effect]") || []) {
+    button.disabled = selectedWords.size === 0 || savingEffect;
+  }
+  for (const button of elements.assetCreateButtons?.querySelectorAll("[data-structured-action]") || []) {
+    button.disabled = !range?.contiguous || savingOverlays;
+  }
   renderFontControls();
 }
 
@@ -302,6 +458,11 @@ function captionSourceCueId(caption) {
   return caption?.source_cue_id || String(caption?.id || "").replace(/-part-\d+$/, "");
 }
 
+function captionsAsset() {
+  const id = systemAssetId("text.cues");
+  return state?.composition?.assets.find((asset) => asset.id === id) || null;
+}
+
 function selectCaptionText(caption) {
   const cueId = captionSourceCueId(caption);
   if (!cueId) return;
@@ -332,7 +493,7 @@ function clearSelectedTextTarget(kind = null) {
 
 function selectedTextFont() {
   if (selectedTextTarget?.kind === "caption") {
-    return state?.overlays?.captions?.cue_fonts?.[selectedTextTarget.cueId]
+    return captionsAsset()?.props?.cue_overrides?.[selectedTextTarget.cueId]?.font_family
       || state?.captionTrack?.style?.font_family
       || "Microsoft YaHei";
   }
@@ -352,7 +513,7 @@ function selectedTextLabel() {
     const index = groups.findIndex((group) => group.id === selectedTextTarget.groupId);
     const group = groups[index];
     if (!group) return "点击画面文字";
-    return `${group.type === "progressive_keywords" ? "关键词" : "清单"} ${index + 1}`;
+    return `${assetTypeDef(group.type)?.ui?.label || "文字"} ${index + 1}`;
   }
   return "点击画面文字";
 }
@@ -369,13 +530,25 @@ function renderFontControls() {
 
 async function saveCaptionFont(cueId, fontFamily) {
   if (!renderEngineCompatible || savingCaptions) return;
+  const asset = captionsAsset();
+  if (!asset) return;
   try {
     savingCaptions = true;
     renderControls();
     setSaveStatus("正在保存当前字幕字体");
-    await requestJson("/api/overlays/captions", {
+    await requestJson(`/api/assets/${encodeURIComponent(asset.id)}`, {
       method: "PATCH",
-      body: JSON.stringify({ cue_id: cueId, font_family: fontFamily }),
+      body: JSON.stringify({
+        props: {
+          cue_overrides: {
+            ...(asset.props.cue_overrides || {}),
+            [cueId]: {
+              ...(asset.props.cue_overrides?.[cueId] || {}),
+              font_family: fontFamily,
+            },
+          },
+        },
+      }),
     });
     await loadState();
     setSaveStatus("当前字幕字体已保存并热重载");
@@ -393,83 +566,26 @@ function saveSelectedFont(fontFamily) {
     return;
   }
   if (selectedTextTarget?.kind === "overlay") {
-    const group = structuredGroupById(selectedTextTarget.groupId);
-    if (!group) return;
-    const next = updatedGroup(currentOverlayGroups(), group.id, (candidate) => ({
-      ...candidate,
-      style: { ...candidate.style, font_family: fontFamily },
-      human_modified: true,
-    }));
-    void saveOverlayGroups(next, `${group.type === "progressive_keywords" ? "关键词" : "清单"}字体已保存并热重载`);
+    void patchAsset(selectedTextTarget.groupId, {
+      props: {
+        style: {
+          ...structuredGroupById(selectedTextTarget.groupId)?.style,
+          font_family: fontFamily,
+        },
+      },
+    }, `${assetTypeDef(structuredGroupById(selectedTextTarget.groupId)?.type)?.ui?.label || "文字"}字体已保存并热重载`);
   }
 }
 
-function overlayItemInput(item, overrides = {}) {
-  return {
-    id: item.id,
-    start_word_index: item.start_word_index,
-    end_word_index: item.end_word_index,
-    display_text: item.display_text,
-    ...(item.box ? { box: { ...item.box } } : {}),
-    ...overrides,
-  };
-}
-
-function overlayGroupInput(group, overrides = {}) {
-  return {
-    id: group.id,
-    type: group.type,
-    enabled: group.enabled,
-    coordinate_space: "screen",
-    box: { ...group.box },
-    ...(group.layout ? { layout: group.layout } : {}),
-    enter_animation: group.enter_animation || "none",
-    style: { ...group.style },
-    items: group.items.map((item) => overlayItemInput(item)),
-    source: group.source,
-    human_modified: group.human_modified,
-    ...overrides,
-  };
-}
-
-function imageOverlayInput(overlay, overrides = {}) {
-  return {
-    id: overlay.id,
-    type: "image",
-    enabled: overlay.enabled,
-    coordinate_space: "screen",
-    image_path: overlay.image_path,
-    fit: "contain",
-    box: { ...overlay.box },
-    start_word_index: overlay.start_word_index,
-    end_word_index: overlay.end_word_index,
-    source: overlay.source,
-    human_modified: overlay.human_modified,
-    ...overrides,
-  };
-}
-
-function currentOverlayGroups() {
-  return (state?.structuredOverlayTrack?.groups || []).map((group) => overlayGroupInput(group));
-}
-
-function currentImageOverlayInputs() {
-  return (state?.imageOverlayTrack?.groups || []).map((overlay) => imageOverlayInput(overlay));
-}
-
-async function saveTimedOverlays(timedOverlays, successMessage) {
+async function patchAsset(assetId, patch, successMessage) {
   if (!renderEngineCompatible || savingOverlays) return;
   try {
     savingOverlays = true;
     renderControls();
     setSaveStatus("正在保存覆盖层");
-    await requestJson("/api/overlays", {
-      method: "PUT",
-      body: JSON.stringify({
-        version: 2,
-        captions: state.overlays.captions,
-        timed_overlays: timedOverlays,
-      }),
+    await requestJson(`/api/assets/${encodeURIComponent(assetId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
     });
     await loadState();
     setSaveStatus(successMessage || "覆盖层已保存并热重载");
@@ -482,77 +598,89 @@ async function saveTimedOverlays(timedOverlays, successMessage) {
   }
 }
 
-async function saveOverlayGroups(groups, successMessage) {
-  return saveTimedOverlays([...groups, ...currentImageOverlayInputs()], successMessage);
+function compositionAsset(assetId) {
+  return state?.composition?.assets.find((asset) => asset.id === assetId) || null;
 }
 
-function saveImageOverlays(images, successMessage) {
-  return saveTimedOverlays([...currentOverlayGroups(), ...images], successMessage);
+function itemInput(item, overrides = {}) {
+  return {
+    id: item.id,
+    start_word_index: item.start_word_index,
+    end_word_index: item.end_word_index,
+    display_text: item.display_text,
+    ...(item.box ? { box: { ...item.box } } : {}),
+    ...overrides,
+  };
 }
 
-function createStructuredGroupFromSelection(type) {
+function schemaProperty(assetType, ...path) {
+  let value = assetType?.instance_schema;
+  for (const key of path) value = value?.[key];
+  return value || {};
+}
+
+function itemSchema(assetType) {
+  return schemaProperty(assetType, "properties", "items");
+}
+
+function displayTextSchema(assetType) {
+  return itemSchema(assetType)?.items?.properties?.display_text || {};
+}
+
+async function createAssetFromSelection(assetType) {
   const range = selectionInfo();
   if (!range?.contiguous) {
     setSaveStatus("请先选择一段连续逐字稿", true);
     return;
   }
-  const displayText = state.words
-    .slice(range.start, range.end + 1)
-    .map((word) => word.text)
-    .join("");
-  const groups = currentOverlayGroups();
-  const isKeywords = type === "progressive_keywords";
-  const keywordCharacterCount = Array.from(displayText.replace(/\s/g, "")).length;
-  if (isKeywords && (keywordCharacterCount < 2 || keywordCharacterCount > 3)) {
-    setSaveStatus("关键词屏幕文案必须是 2 到 3 个字符", true);
-    return;
+  const displayText = state.words.slice(range.start, range.end + 1).map((word) => word.text).join("");
+  const textSchema = displayTextSchema(assetType);
+  if (textSchema.minLength !== undefined || textSchema.maxLength !== undefined) {
+    const count = Array.from(displayText.replace(/\s/g, "")).length;
+    if (
+      (textSchema.minLength !== undefined && count < textSchema.minLength)
+      || (textSchema.maxLength !== undefined && count > textSchema.maxLength)
+    ) {
+      setSaveStatus(`${assetType.ui?.label || "文案"}长度必须在 ${textSchema.minLength ?? 0} 到 ${textSchema.maxLength ?? "不限"} 个字符`, true);
+      return;
+    }
   }
-  groups.push({
-    id: `${isKeywords ? "overlay-keywords" : "overlay-list"}-${Date.now()}`,
-    type,
-    enabled: true,
-    ...(isKeywords ? { layout: "auto", enter_animation: "pop" } : { enter_animation: "none" }),
-    items: [{
-      start_word_index: range.start,
-      end_word_index: range.end,
-      display_text: displayText,
-    }],
-    source: "human",
-    human_modified: false,
-  });
-  void saveOverlayGroups(groups, isKeywords ? "新关键词组已创建" : "新清单已创建");
-}
-
-function createListFromSelection() {
-  createStructuredGroupFromSelection("progressive_list");
-}
-
-function createKeywordsFromSelection() {
-  createStructuredGroupFromSelection("progressive_keywords");
-}
-
-function createImageFromSelection() {
-  const range = selectionInfo();
-  if (!range?.contiguous) {
-    setSaveStatus("请先选择一段连续逐字稿", true);
-    return;
+  const props = {};
+  const lifecycle = { kind: "word_range", start_word_index: range.start, end_word_index: range.end };
+  if ((assetType.capabilities || []).includes("ordered-items")) {
+    props.items = [{ start_word_index: range.start, end_word_index: range.end, display_text: displayText }];
+    if ((assetType.capabilities || []).includes("layout.items")) props.layout = "auto";
   }
-  const imagePath = window.prompt("请输入本地图片的完整路径，支持 PNG、JPG、JPEG、WebP、BMP");
-  if (!imagePath?.trim()) return;
-  const images = currentImageOverlayInputs();
-  images.push({
-    id: `overlay-image-${Date.now()}`,
-    type: "image",
-    enabled: true,
-    image_path: imagePath.trim(),
-    fit: "contain",
-    box: { x: 0.58, y: 0.08, width: 0.34, height: 0.28, unit: "ratio" },
-    start_word_index: range.start,
-    end_word_index: range.end,
-    source: "human",
-    human_modified: false,
-  });
-  void saveImageOverlays(images, "新贴图已创建");
+  if ((assetType.capabilities || []).includes("media.image")) {
+    const imagePath = window.prompt("请输入本地图片的完整路径，支持 PNG、JPG、JPEG、WebP、BMP");
+    if (!imagePath?.trim()) return;
+    props.image_path = imagePath.trim();
+    props.fit = "contain";
+    props.box = { ...(assetType.defaults?.props?.box || { x: 0.58, y: 0.08, width: 0.34, height: 0.28, unit: "ratio" }) };
+  }
+  try {
+    savingOverlays = true;
+    renderControls();
+    setSaveStatus(`正在创建${assetType.ui?.label || "覆盖层"}`);
+    await requestJson("/api/assets", {
+      method: "POST",
+      body: JSON.stringify({
+        type: assetType.id,
+        enabled: true,
+        source: { kind: "agent-generated" },
+        lifecycle,
+        props: { ...(assetType.defaults?.props || {}), ...props },
+      }),
+    });
+    await loadState();
+    setSaveStatus(`${assetType.ui?.label || "覆盖层"}已创建`);
+  } catch (error) {
+    setSaveStatus(`${error.message}${error.details ? `　${JSON.stringify(error.details)}` : ""}`, true);
+  } finally {
+    savingOverlays = false;
+    renderControls();
+    renderStructuredEditor();
+  }
 }
 
 function compactButton(label, className, action) {
@@ -594,16 +722,40 @@ function selectStructuredItem(item) {
   previewSelectionRange(range);
 }
 
-function updatedGroup(groups, groupId, updater) {
-  return groups.map((group) => group.id === groupId
-    ? updater({ ...group, items: group.items.map((item) => ({ ...item })) })
-    : group);
+function popEffectType() {
+  return state?.catalog?.effectTypes?.find((item) => (
+    (item.writes_channels || []).includes("transform.scale.entry")
+  )) || null;
 }
 
-function updatedImageOverlays(images, overlayId, updater) {
-  return images.map((overlay) => overlay.id === overlayId
-    ? updater({ ...overlay, box: { ...overlay.box } })
-    : overlay);
+function assetHasPop(assetId) {
+  const type = popEffectType();
+  return Boolean(type && state.composition.effects.some((effect) => (
+    effect.target.asset_id === assetId && effect.type === type.id
+  )));
+}
+
+async function setAssetPop(assetId, enabled) {
+  const type = popEffectType();
+  if (!type) return;
+  const existing = state.composition.effects.find((effect) => (
+    effect.target.asset_id === assetId && effect.type === type.id
+  ));
+  if (enabled && existing) return;
+  if (!enabled && !existing) return;
+  if (enabled) {
+    await requestJson("/api/effects", {
+      method: "POST",
+      body: JSON.stringify({
+        type: type.id,
+        target: { asset_id: assetId },
+        timing: { kind: "item_enter" },
+        config: {},
+      }),
+    });
+  } else {
+    await requestJson(`/api/effects/${encodeURIComponent(existing.id)}`, { method: "DELETE" });
+  }
 }
 
 function renderStructuredEditor() {
@@ -619,8 +771,9 @@ function renderStructuredEditor() {
   }
 
   groups.forEach((group, groupIndex) => {
-    const isKeywords = group.type === "progressive_keywords";
-    const kindLabel = isKeywords ? "关键词" : "清单";
+    const isItems = group.layout_mode === "items";
+    const kindLabel = assetTypeDef(group.type)?.ui?.label || "文字";
+    const asset = compositionAsset(group.id);
     const section = document.createElement("section");
     section.className = "structured-group";
     const heading = document.createElement("div");
@@ -632,19 +785,15 @@ function renderStructuredEditor() {
     headingActions.className = "structured-group__actions";
     headingActions.append(
       compactButton(group.enabled ? "撤下" : "启用", "", () => {
-        const next = updatedGroup(currentOverlayGroups(), group.id, (candidate) => ({
-          ...candidate,
-          enabled: !candidate.enabled,
-          human_modified: true,
-        }));
-        void saveOverlayGroups(next, group.enabled ? `${kindLabel}已撤下` : `${kindLabel}已启用`);
+        void patchAsset(group.id, { enabled: !group.enabled }, group.enabled ? `${kindLabel}已撤下` : `${kindLabel}已启用`);
       }),
       compactButton("删除", "compact-button--danger", () => {
         if (!window.confirm(`确认删除整组${kindLabel}吗`)) return;
-        void saveOverlayGroups(
-          currentOverlayGroups().filter((candidate) => candidate.id !== group.id),
-          `${kindLabel}已删除`,
-        );
+        void (async () => {
+          await requestJson(`/api/assets/${encodeURIComponent(group.id)}`, { method: "DELETE" });
+          await loadState();
+          setSaveStatus(`${kindLabel}已删除`);
+        })();
       }),
     );
     heading.append(title, headingActions);
@@ -653,29 +802,23 @@ function renderStructuredEditor() {
     const settings = document.createElement("div");
     settings.className = "structured-group__settings";
     settings.append(compactSelect(
-      group.enter_animation || "none",
+      assetHasPop(group.id) ? "pop" : "none",
       [
         { value: "none", label: "直接出现" },
         { value: "pop", label: "轻微弹出" },
       ],
       `${kindLabel}入场动画`,
-      (enterAnimation) => {
-        const next = updatedGroup(currentOverlayGroups(), group.id, (candidate) => ({
-          ...candidate,
-          enter_animation: enterAnimation,
-          human_modified: true,
-        }));
-        void saveOverlayGroups(next, `${kindLabel}动画已保存`);
+      (value) => {
+        void (async () => {
+          await setAssetPop(group.id, value === "pop");
+          await loadState();
+          setSaveStatus(`${kindLabel}动画已保存`);
+        })();
       },
     ));
-    if (isKeywords) {
+    if (isItems) {
       const autoLayoutButton = compactButton("恢复自动布局", "", () => {
-        const next = updatedGroup(currentOverlayGroups(), group.id, (candidate) => ({
-          ...candidate,
-          layout: "auto",
-          human_modified: true,
-        }));
-        void saveOverlayGroups(next, "关键词已恢复自动布局");
+        void patchAsset(group.id, { props: { layout: "auto" } }, "关键词已恢复自动布局");
       });
       autoLayoutButton.disabled = savingOverlays || group.layout === "auto";
       settings.append(autoLayoutButton);
@@ -683,28 +826,23 @@ function renderStructuredEditor() {
     section.append(settings);
 
     group.items.forEach((item, itemIndex) => {
+      const groupAssetType = assetTypeDef(group.type);
+      const textSchema = displayTextSchema(groupAssetType);
       const row = document.createElement("div");
       row.className = "structured-item-editor";
-      row.append(compactButton(String(itemIndex + 1), "compact-button--index", () => {
-        selectStructuredItem(item);
-      }));
+      row.append(compactButton(String(itemIndex + 1), "compact-button--index", () => selectStructuredItem(item)));
       const input = document.createElement("input");
       input.type = "text";
       input.value = item.display_text;
-      input.minLength = isKeywords ? 2 : 1;
-      input.maxLength = isKeywords ? 3 : 120;
-      input.setAttribute("aria-label", `${kindLabel} ${groupIndex + 1} 第 ${itemIndex + 1} 条显示文字`);
+      input.minLength = textSchema.minLength ?? 1;
+      input.maxLength = textSchema.maxLength ?? 120;
       input.dataset.structuredAction = "";
       input.addEventListener("change", () => {
         if (input.value.trim() === item.display_text) return;
-        const next = updatedGroup(currentOverlayGroups(), group.id, (candidate) => ({
-          ...candidate,
-          items: candidate.items.map((entry) => entry.id === item.id
-            ? overlayItemInput(entry, { display_text: input.value.trim() })
-            : entry),
-          human_modified: true,
-        }));
-        void saveOverlayGroups(next, `${kindLabel}文案已保存`);
+        const items = (asset?.props.items || group.items).map((entry) => itemInput(entry, entry.id === item.id
+          ? { display_text: input.value.trim() }
+          : {}));
+        void patchAsset(group.id, { props: { items } }, `${kindLabel}文案已保存`);
       });
       row.append(input);
       row.append(compactButton("替换", "", () => {
@@ -713,29 +851,30 @@ function renderStructuredEditor() {
           setSaveStatus("请先选择一段连续逐字稿", true);
           return;
         }
-        const next = updatedGroup(currentOverlayGroups(), group.id, (candidate) => ({
-          ...candidate,
-          items: candidate.items.map((entry) => entry.id === item.id
-            ? overlayItemInput(entry, {
-              start_word_index: range.start,
-              end_word_index: range.end,
-            })
-            : entry),
-          human_modified: true,
-        }));
-        void saveOverlayGroups(next, `${kindLabel}条目范围已替换`);
+        const items = (asset?.props.items || group.items).map((entry) => itemInput(entry, entry.id === item.id
+          ? { start_word_index: range.start, end_word_index: range.end }
+          : {}));
+        void patchAsset(group.id, {
+          props: { items },
+          lifecycle: {
+            kind: "word_range",
+            start_word_index: Math.min(...items.map((entry) => entry.start_word_index)),
+            end_word_index: Math.max(...items.map((entry) => entry.end_word_index)),
+          },
+        }, `${kindLabel}条目范围已替换`);
       }));
       row.append(compactButton("×", "compact-button--danger", () => {
         if (!window.confirm(`确认删除这个${kindLabel}条目吗`)) return;
-        const groupsInput = currentOverlayGroups();
-        const next = group.items.length === 1
-          ? groupsInput.filter((candidate) => candidate.id !== group.id)
-          : updatedGroup(groupsInput, group.id, (candidate) => ({
-            ...candidate,
-            items: candidate.items.filter((entry) => entry.id !== item.id),
-            human_modified: true,
-          }));
-        void saveOverlayGroups(next, `${kindLabel}条目已删除`);
+        if (group.items.length === 1) {
+          void requestJson(`/api/assets/${encodeURIComponent(group.id)}`, { method: "DELETE" })
+            .then(() => loadState())
+            .then(() => setSaveStatus(`${kindLabel}条目已删除`));
+          return;
+        }
+        const items = (asset?.props.items || group.items)
+          .filter((entry) => entry.id !== item.id)
+          .map((entry) => itemInput(entry));
+        void patchAsset(group.id, { props: { items } }, `${kindLabel}条目已删除`);
       }));
       section.append(row);
     });
@@ -746,30 +885,32 @@ function renderStructuredEditor() {
         setSaveStatus("请先选择一段连续逐字稿", true);
         return;
       }
-      const displayText = state.words
-        .slice(range.start, range.end + 1)
-        .map((word) => word.text)
-        .join("");
-      const keywordCharacterCount = Array.from(displayText.replace(/\s/g, "")).length;
-      if (isKeywords && (keywordCharacterCount < 2 || keywordCharacterCount > 3)) {
-        setSaveStatus("关键词屏幕文案必须是 2 到 3 个字符", true);
+      const displayText = state.words.slice(range.start, range.end + 1).map((word) => word.text).join("");
+      const groupAssetType = assetTypeDef(group.type);
+      const textSchema = displayTextSchema(groupAssetType);
+      const displayLength = Array.from(displayText.replace(/\s/g, "")).length;
+      if (
+        (textSchema.minLength !== undefined && displayLength < textSchema.minLength)
+        || (textSchema.maxLength !== undefined && displayLength > textSchema.maxLength)
+      ) {
+        setSaveStatus(`${kindLabel}文案长度必须在 ${textSchema.minLength ?? 0} 到 ${textSchema.maxLength ?? "不限"} 个字符`, true);
         return;
       }
-      const next = updatedGroup(currentOverlayGroups(), group.id, (candidate) => ({
-        ...candidate,
-        items: [
-          ...candidate.items,
-          {
-            start_word_index: range.start,
-            end_word_index: range.end,
-            display_text: displayText,
-          },
-        ],
-        human_modified: true,
-      }));
-      void saveOverlayGroups(next, `${kindLabel}条目已追加`);
+      const items = [
+        ...(asset?.props.items || group.items).map((entry) => itemInput(entry)),
+        { start_word_index: range.start, end_word_index: range.end, display_text: displayText },
+      ];
+      void patchAsset(group.id, {
+        props: { items },
+        lifecycle: {
+          kind: "word_range",
+          start_word_index: items[0].start_word_index,
+          end_word_index: items.at(-1).end_word_index,
+        },
+      }, `${kindLabel}条目已追加`);
     });
-    appendButton.disabled = savingOverlays || group.items.length >= (isKeywords ? 4 : 8);
+    const maxItems = itemSchema(assetTypeDef(group.type)).maxItems ?? Number.POSITIVE_INFINITY;
+    appendButton.disabled = savingOverlays || group.items.length >= maxItems;
     section.append(appendButton);
     elements.structuredEditor.append(section);
   });
@@ -786,42 +927,27 @@ function renderStructuredEditor() {
     headingActions.className = "structured-group__actions";
     headingActions.append(
       compactButton(overlay.enabled ? "撤下" : "启用", "", () => {
-        const next = updatedImageOverlays(currentImageOverlayInputs(), overlay.id, (candidate) => ({
-          ...candidate,
-          enabled: !candidate.enabled,
-          human_modified: true,
-        }));
-        void saveImageOverlays(next, overlay.enabled ? "贴图已撤下" : "贴图已启用");
+        void patchAsset(overlay.id, { enabled: !overlay.enabled }, overlay.enabled ? "贴图已撤下" : "贴图已启用");
       }),
       compactButton("删除", "compact-button--danger", () => {
         if (!window.confirm("确认删除这张贴图吗")) return;
-        void saveImageOverlays(
-          currentImageOverlayInputs().filter((candidate) => candidate.id !== overlay.id),
-          "贴图已删除",
-        );
+        void requestJson(`/api/assets/${encodeURIComponent(overlay.id)}`, { method: "DELETE" })
+          .then(() => loadState())
+          .then(() => setSaveStatus("贴图已删除"));
       }),
     );
     heading.append(title, headingActions);
     section.append(heading);
-
     const row = document.createElement("div");
     row.className = "structured-item-editor";
-    row.append(compactButton("定位", "compact-button--index", () => {
-      selectStructuredItem(overlay);
-    }));
+    row.append(compactButton("定位", "compact-button--index", () => selectStructuredItem(overlay)));
     const input = document.createElement("input");
     input.type = "text";
     input.value = overlay.image_path;
-    input.setAttribute("aria-label", `贴图 ${imageIndex + 1} 本地路径`);
     input.dataset.structuredAction = "";
     input.addEventListener("change", () => {
       if (!input.value.trim() || input.value.trim() === overlay.image_path) return;
-      const next = updatedImageOverlays(currentImageOverlayInputs(), overlay.id, (candidate) => ({
-        ...candidate,
-        image_path: input.value.trim(),
-        human_modified: true,
-      }));
-      void saveImageOverlays(next, "贴图路径已保存");
+      void patchAsset(overlay.id, { props: { image_path: input.value.trim() } }, "贴图路径已保存");
     });
     row.append(input);
     row.append(compactButton("替换范围", "", () => {
@@ -830,13 +956,9 @@ function renderStructuredEditor() {
         setSaveStatus("请先选择一段连续逐字稿", true);
         return;
       }
-      const next = updatedImageOverlays(currentImageOverlayInputs(), overlay.id, (candidate) => ({
-        ...candidate,
-        start_word_index: range.start,
-        end_word_index: range.end,
-        human_modified: true,
-      }));
-      void saveImageOverlays(next, "贴图出现范围已替换");
+      void patchAsset(overlay.id, {
+        lifecycle: { kind: "word_range", start_word_index: range.start, end_word_index: range.end },
+      }, "贴图出现范围已替换");
     }));
     section.append(row);
     elements.structuredEditor.append(section);
@@ -846,12 +968,15 @@ function renderStructuredEditor() {
 function renderRenderStatus() {
   const status = state.renderStatus || { state: "idle" };
   const running = status.state === "running";
-  elements.renderButton.disabled = running || !renderEngineCompatible;
+  const lockOk = state.profileLock?.ok !== false;
+  elements.renderButton.disabled = running || !renderEngineCompatible || !lockOk;
   elements.renderButton.textContent = running
     ? `生成中 ${status.progress || 0}%`
-    : renderEngineCompatible
-      ? "确认并生成成片"
-      : "导出服务需重启";
+    : !renderEngineCompatible
+      ? "导出服务需重启"
+      : !lockOk
+        ? "Profile 需同步"
+        : "确认并生成成片";
 }
 
 function renderProjectSaveButton(label = null) {
@@ -874,14 +999,17 @@ async function loadState(options = {}) {
     const firstLoad = !state;
     state = nextState;
     renderEngineCompatible = state.renderEngineVersion === requiredRenderEngineVersion
+      && Boolean(state.playbackScene)
       && Array.isArray(state.playbackEffects)
       && Array.isArray(state.playbackCaptions)
       && Array.isArray(state.playbackOverlays)
       && Array.isArray(state.playbackImageOverlays)
       && Boolean(state.captionTrack)
       && Boolean(state.structuredOverlayTrack)
-      && Boolean(state.imageOverlayTrack);
-    playbackEffects = renderEngineCompatible ? state.playbackEffects : state.effects;
+      && Boolean(state.imageOverlayTrack)
+      && Boolean(state.composition)
+      && Boolean(state.catalog);
+    playbackEffects = renderEngineCompatible ? state.playbackEffects : [];
     playbackCaptions = renderEngineCompatible ? state.playbackCaptions : [];
     playbackOverlays = renderEngineCompatible ? state.playbackOverlays : [];
     playbackImageOverlays = renderEngineCompatible ? state.playbackImageOverlays : [];
@@ -891,16 +1019,20 @@ async function loadState(options = {}) {
       for (const wordIndex of state.editorState?.selectedWordIndexes || []) selectedWords.add(wordIndex);
       pendingRestoreTime = Number(state.editorState?.currentTime || 0);
       renderTranscript();
-    }
-    else renderTranscriptClasses();
+    } else renderTranscriptClasses();
     renderProject();
     applyRestoredPlaybackPosition();
+    renderEffectCatalog();
+    renderAssetCreateButtons();
     renderCaptionControls();
     renderStructuredEditor();
     renderControls();
     renderRenderStatus();
     renderProjectSaveButton();
-    if (renderEngineCompatible) {
+    if (state.profileLock?.ok === false) {
+      setConnection("Profile 已变化", "error");
+      setSaveStatus(`Profile 与 lock 不一致，预览可用，导出前请运行 profile sync。${(state.profileLock.changes || []).join("；")}`, true);
+    } else if (renderEngineCompatible) {
       setConnection(options.external ? "已热重载" : "已连接", "ok");
     } else {
       setConnection("导出服务需重启", "error");
@@ -940,13 +1072,14 @@ async function saveProject() {
 }
 
 async function setCaptionsEnabled(enabled) {
-  if (!renderEngineCompatible || savingCaptions) return;
+  const asset = captionsAsset();
+  if (!renderEngineCompatible || savingCaptions || !asset) return;
   if (Boolean(state.captionTrack.enabled) === enabled) return;
   try {
     savingCaptions = true;
     renderCaptionControls();
     setSaveStatus(enabled ? "正在启用字幕" : "正在关闭字幕");
-    await requestJson("/api/overlays/captions", {
+    await requestJson(`/api/assets/${encodeURIComponent(asset.id)}`, {
       method: "PATCH",
       body: JSON.stringify({ enabled }),
     });
@@ -988,7 +1121,8 @@ function setCaptionBoxInState(box) {
   if (!state?.captionTrack) return;
   const normalized = normalizedCaptionBox(box);
   state.captionTrack.box = normalized;
-  if (state.overlays?.captions) state.overlays.captions.box = { ...normalized };
+  const asset = captionsAsset();
+  if (asset) asset.props.box = { ...normalized };
 }
 
 function normalizedCaptionFontSizeRatio(value) {
@@ -997,10 +1131,14 @@ function normalizedCaptionFontSizeRatio(value) {
 
 function setCaptionFontSizeInState(cueId, fontSizeRatio) {
   const normalized = normalizedCaptionFontSizeRatio(fontSizeRatio);
-  if (state?.overlays?.captions) {
-    state.overlays.captions.cue_font_size_ratios = {
-      ...(state.overlays.captions.cue_font_size_ratios || {}),
-      [cueId]: normalized,
+  const asset = captionsAsset();
+  if (asset) {
+    asset.props.cue_overrides = {
+      ...(asset.props.cue_overrides || {}),
+      [cueId]: {
+        ...(asset.props.cue_overrides?.[cueId] || {}),
+        font_size_ratio: normalized,
+      },
     };
   }
   for (const caption of playbackCaptions) {
@@ -1017,14 +1155,15 @@ function renderCaptionSelection() {
 }
 
 async function saveCaptionBox(box, previousBox) {
-  if (!renderEngineCompatible || savingCaptions) return;
+  const asset = captionsAsset();
+  if (!renderEngineCompatible || savingCaptions || !asset) return;
   try {
     savingCaptions = true;
     renderCaptionControls();
     setSaveStatus("正在保存字幕区块");
-    await requestJson("/api/overlays/captions", {
+    await requestJson(`/api/assets/${encodeURIComponent(asset.id)}`, {
       method: "PATCH",
-      body: JSON.stringify({ box }),
+      body: JSON.stringify({ props: { box } }),
     });
     await loadState();
     setSaveStatus("字幕区块已保存并热重载");
@@ -1038,14 +1177,25 @@ async function saveCaptionBox(box, previousBox) {
 }
 
 async function saveCaptionFontSize(cueId, fontSizeRatio, previousFontSizeRatio) {
-  if (!renderEngineCompatible || savingCaptions) return;
+  const asset = captionsAsset();
+  if (!renderEngineCompatible || savingCaptions || !asset) return;
   try {
     savingCaptions = true;
     renderCaptionControls();
     setSaveStatus("正在保存当前字幕字号");
-    await requestJson("/api/overlays/captions", {
+    await requestJson(`/api/assets/${encodeURIComponent(asset.id)}`, {
       method: "PATCH",
-      body: JSON.stringify({ cue_id: cueId, font_size_ratio: fontSizeRatio }),
+      body: JSON.stringify({
+        props: {
+          cue_overrides: {
+            ...(asset.props.cue_overrides || {}),
+            [cueId]: {
+              ...(asset.props.cue_overrides?.[cueId] || {}),
+              font_size_ratio: fontSizeRatio,
+            },
+          },
+        },
+      }),
     });
     await loadState();
     setSaveStatus("当前字幕字号已保存并热重载");
@@ -1136,18 +1286,11 @@ function finishCaptionInteraction(event, cancelled = false) {
     elements.subtitleOverlay.releasePointerCapture(interaction.pointerId);
   }
   if (cancelled) {
-    if (interaction.mode === "font-resize") {
-      setCaptionFontSizeInState(interaction.cueId, interaction.startFontSizeRatio);
-    } else {
-      setCaptionBoxInState(interaction.startBox);
-    }
+    if (interaction.mode === "font-resize") setCaptionFontSizeInState(interaction.cueId, interaction.startFontSizeRatio);
+    else setCaptionBoxInState(interaction.startBox);
   } else if (interaction.moved) {
     if (interaction.mode === "font-resize") {
-      void saveCaptionFontSize(
-        interaction.cueId,
-        interaction.currentFontSizeRatio,
-        interaction.startFontSizeRatio,
-      );
+      void saveCaptionFontSize(interaction.cueId, interaction.currentFontSizeRatio, interaction.startFontSizeRatio);
     } else {
       void saveCaptionBox(interaction.currentBox, interaction.startBox);
     }
@@ -1166,7 +1309,8 @@ function setImageBoxInState(overlayId, box) {
     if (overlay?.id === overlayId) overlay.box = { ...normalized };
   };
   for (const overlay of state?.imageOverlayTrack?.groups || []) update(overlay);
-  for (const overlay of state?.overlays?.timed_overlays || []) update(overlay);
+  const asset = compositionAsset(overlayId);
+  if (asset) asset.props.box = { ...normalized };
   for (const overlay of playbackImageOverlays) update(overlay);
   return normalized;
 }
@@ -1178,12 +1322,7 @@ function renderImageSelection() {
 }
 
 function saveImageBox(overlayId, box) {
-  const next = updatedImageOverlays(currentImageOverlayInputs(), overlayId, (candidate) => ({
-    ...candidate,
-    box: { ...box },
-    human_modified: true,
-  }));
-  void saveImageOverlays(next, "贴图位置和尺寸已保存并热重载");
+  void patchAsset(overlayId, { props: { box } }, "贴图位置和尺寸已保存并热重载");
 }
 
 function beginImageInteraction(event) {
@@ -1266,10 +1405,8 @@ function setStructuredBoxInState(groupId, box) {
   const normalized = normalizedCaptionBox(box);
   const group = structuredGroupById(groupId);
   if (group) group.box = { ...normalized };
-  if (state?.overlays?.timed_overlays) {
-    const stored = state.overlays.timed_overlays.find((candidate) => candidate.id === groupId);
-    if (stored) stored.box = { ...normalized };
-  }
+  const asset = compositionAsset(groupId);
+  if (asset) asset.props.box = { ...normalized };
   for (const playbackState of playbackOverlays) {
     if (playbackState.overlay_id === groupId) playbackState.box = { ...normalized };
   }
@@ -1286,12 +1423,10 @@ function setStructuredItemBoxInState(groupId, itemId, box, layout = "custom") {
     group.layout = layout;
     updateItems(group.items);
   }
-  if (state?.overlays?.timed_overlays) {
-    const stored = state.overlays.timed_overlays.find((candidate) => candidate.id === groupId);
-    if (stored) {
-      stored.layout = layout;
-      updateItems(stored.items);
-    }
+  const asset = compositionAsset(groupId);
+  if (asset) {
+    asset.props.layout = layout;
+    updateItems(asset.props.items);
   }
   for (const playbackState of playbackOverlays) {
     if (playbackState.overlay_id === groupId) updateItems(playbackState.items);
@@ -1317,7 +1452,8 @@ function setStructuredFontSizeInState(groupId, fontSizeRatio) {
     }
   };
   updateGroup(structuredGroupById(groupId));
-  for (const candidate of state?.overlays?.timed_overlays || []) updateGroup(candidate);
+  const asset = compositionAsset(groupId);
+  if (asset) asset.props.style = { ...asset.props.style, font_size_ratio: normalized };
   for (const candidate of playbackOverlays) {
     if (candidate.overlay_id !== groupId) continue;
     candidate.style = { ...candidate.style, font_size_ratio: normalized };
@@ -1372,42 +1508,33 @@ function renderStructuredSelection() {
 }
 
 function saveStructuredBox(groupId, box) {
-  const next = updatedGroup(currentOverlayGroups(), groupId, (candidate) => ({
-    ...candidate,
-    box: { ...box },
-    human_modified: true,
-  }));
-  void saveOverlayGroups(next, "清单区块已保存并热重载");
+  void patchAsset(groupId, { props: { box } }, "清单区块已保存并热重载");
 }
 
 function saveStructuredItemBox(groupId, itemId, box) {
-  const next = updatedGroup(currentOverlayGroups(), groupId, (candidate) => ({
-    ...candidate,
-    layout: "custom",
-    items: candidate.items.map((item) => item.id === itemId
-      ? overlayItemInput(item, { box: { ...box } })
-      : item),
-    human_modified: true,
-  }));
-  void saveOverlayGroups(next, "关键词位置已保存并热重载");
+  const asset = compositionAsset(groupId);
+  const group = structuredGroupById(groupId);
+  const items = (asset?.props.items || group.items).map((item) => itemInput(item, item.id === itemId ? { box } : {}));
+  void patchAsset(groupId, { props: { layout: "custom", items } }, "关键词位置已保存并热重载");
 }
 
 function saveStructuredFontSize(groupId, fontSizeRatio, itemBoxes = null) {
-  const next = updatedGroup(currentOverlayGroups(), groupId, (candidate) => ({
-    ...candidate,
-    ...(itemBoxes ? {
-      layout: "custom",
-      items: candidate.items.map((item) => overlayItemInput(item, {
-        box: { ...(itemBoxes[item.id] || item.box) },
-      })),
-    } : {}),
-    style: {
-      ...candidate.style,
-      font_size_ratio: normalizedStructuredFontSizeRatio(fontSizeRatio),
+  const asset = compositionAsset(groupId);
+  const group = structuredGroupById(groupId);
+  void patchAsset(groupId, {
+    props: {
+      ...(itemBoxes ? {
+        layout: "custom",
+        items: (asset?.props.items || group.items).map((item) => itemInput(item, {
+          box: { ...(itemBoxes[item.id] || item.box) },
+        })),
+      } : {}),
+      style: {
+        ...(asset?.props.style || group.style),
+        font_size_ratio: normalizedStructuredFontSizeRatio(fontSizeRatio),
+      },
     },
-    human_modified: true,
-  }));
-  void saveOverlayGroups(next, "整组字号已保存并热重载");
+  }, "整组字号已保存并热重载");
 }
 
 function beginStructuredInteraction(event) {
@@ -1419,7 +1546,8 @@ function beginStructuredInteraction(event) {
   event.preventDefault();
   event.stopPropagation();
   const itemElement = event.target.closest("[data-item-id]");
-  if (group.type === "progressive_keywords" && !itemElement) return;
+  const isItems = group.layout_mode === "items";
+  if (isItems && !itemElement) return;
   const itemId = itemElement?.dataset.itemId || null;
   const item = itemId ? group.items.find((candidate) => candidate.id === itemId) : null;
   const resizingFont = Boolean(event.target.closest(".structured-item-resize-handle"));
@@ -1428,15 +1556,15 @@ function beginStructuredInteraction(event) {
   selectStructuredText(group.id);
   const startBox = normalizedCaptionBox(item?.box || group.box);
   const startFontSizeRatio = normalizedStructuredFontSizeRatio(group.style.font_size_ratio);
-  const startItemBoxes = group.type === "progressive_keywords"
+  const startItemBoxes = isItems
     ? Object.fromEntries(group.items.map((candidate) => [candidate.id, normalizedCaptionBox(candidate.box)]))
     : {};
   structuredInteraction = {
     pointerId: event.pointerId,
     groupId: group.id,
-    groupType: group.type,
+    layoutMode: group.layout_mode,
     itemId,
-    target: resizingFont ? "font" : item && group.type === "progressive_keywords" ? "item" : "group",
+    target: resizingFont ? "font" : item && isItems ? "item" : "group",
     mode: resizingFont ? "font-resize" : "move",
     startClientX: event.clientX,
     startClientY: event.clientY,
@@ -1469,7 +1597,7 @@ function updateStructuredInteraction(event) {
       interaction.groupId,
       interaction.startFontSizeRatio + fontDelta,
     );
-    if (interaction.groupType === "progressive_keywords") {
+    if (interaction.layoutMode === "items") {
       interaction.currentItemBoxes = resizeKeywordBoxesInState(
         interaction.groupId,
         interaction.startItemBoxes,
@@ -1508,21 +1636,11 @@ function finishStructuredInteraction(event, cancelled = false) {
   if (cancelled) {
     if (interaction.target === "font") {
       setStructuredFontSizeInState(interaction.groupId, interaction.startFontSizeRatio);
-      if (interaction.groupType === "progressive_keywords") {
-        resizeKeywordBoxesInState(
-          interaction.groupId,
-          interaction.startItemBoxes,
-          1,
-          interaction.startLayout || "auto",
-        );
+      if (interaction.layoutMode === "items") {
+        resizeKeywordBoxesInState(interaction.groupId, interaction.startItemBoxes, 1, interaction.startLayout || "auto");
       }
     } else if (interaction.target === "item") {
-      setStructuredItemBoxInState(
-        interaction.groupId,
-        interaction.itemId,
-        interaction.startBox,
-        interaction.startLayout || "auto",
-      );
+      setStructuredItemBoxInState(interaction.groupId, interaction.itemId, interaction.startBox, interaction.startLayout || "auto");
     } else {
       setStructuredBoxInState(interaction.groupId, interaction.startBox);
     }
@@ -1531,7 +1649,7 @@ function finishStructuredInteraction(event, cancelled = false) {
       saveStructuredFontSize(
         interaction.groupId,
         interaction.currentFontSizeRatio,
-        interaction.groupType === "progressive_keywords" ? interaction.currentItemBoxes : null,
+        interaction.layoutMode === "items" ? interaction.currentItemBoxes : null,
       );
     } else if (interaction.target === "item") {
       saveStructuredItemBox(interaction.groupId, interaction.itemId, interaction.currentBox);
@@ -1543,18 +1661,6 @@ function finishStructuredInteraction(event, cancelled = false) {
   resumeCaptionPlayback(interaction);
 }
 
-function effectInput(effect, overrides = {}) {
-  return {
-    target: effect.target,
-    effect_type: effect.effect_type,
-    start_word_index: effect.start_word_index,
-    end_word_index: effect.end_word_index,
-    source: effect.source,
-    human_modified: effect.human_modified,
-    ...overrides,
-  };
-}
-
 function previewSelectionRange(range) {
   const startWord = state?.words?.[range?.start];
   if (!startWord) return;
@@ -1564,43 +1670,7 @@ function previewSelectionRange(range) {
   updatePlayerControls();
 }
 
-function replacementEffects(range, effectType, target = "video.main") {
-  const next = [];
-  const replacedEffects = state.effects.filter((effect) => (
-    effect.target === target
-    && effect.start_word_index <= range.end
-    && effect.end_word_index >= range.start
-  ));
-  for (const effect of state.effects) {
-    const overlaps = effect.target === target
-      && effect.start_word_index <= range.end
-      && effect.end_word_index >= range.start;
-    if (!overlaps) {
-      next.push(effectInput(effect));
-      continue;
-    }
-    if (effect.start_word_index < range.start) {
-      next.push(effectInput(effect, { end_word_index: range.start - 1, human_modified: true }));
-    }
-    if (effect.end_word_index > range.end) {
-      next.push(effectInput(effect, { start_word_index: range.end + 1, human_modified: true }));
-    }
-  }
-  if (effectType) {
-    const modifiesAiEffect = replacedEffects.some((effect) => effect.source === "ai");
-    next.push({
-      target,
-      effect_type: effectType,
-      start_word_index: range.start,
-      end_word_index: range.end,
-      source: modifiesAiEffect ? "ai" : "human",
-      human_modified: modifiesAiEffect,
-    });
-  }
-  return next;
-}
-
-async function toggleSelectionEffect(button) {
+async function toggleSelectionEffect(effectType, preset, button) {
   const range = selectionInfo();
   if (!range) {
     setSaveStatus("请先选择连续文字", true);
@@ -1610,20 +1680,27 @@ async function toggleSelectionEffect(button) {
     setSaveStatus("当前选择不连续，请补齐或取消多余文字", true);
     return;
   }
-  const target = button.dataset.target;
-  const effectType = button.dataset.effectType;
+  const target = defaultTargetForEffect(effectType);
+  if (!target) {
+    setSaveStatus(`当前时间范围没有可应用${effectType.ui?.label || effectType.id}的 Asset`, true);
+    return;
+  }
+  const enabled = !selectionHasEffect(range, target, effectType.id, preset.config);
   const effectLabel = button.textContent.trim();
-  const enabled = !selectionHasEffect(range, target, effectType);
   try {
     savingEffect = true;
     renderControls();
     setSaveStatus(enabled ? `正在添加${effectLabel}` : `正在取消${effectLabel}`);
-    await requestJson("/api/selection-effects", {
-      method: "PATCH",
+    await requestJson("/api/effects", {
+      method: "POST",
       body: JSON.stringify({
+        replace_range: true,
+        enabled,
+        type: effectType.id,
+        target: { asset_id: target },
         start_word_index: range.start,
         end_word_index: range.end,
-        changes: [{ target, effect_type: effectType, enabled }],
+        config: preset.config,
       }),
     });
     selectedWords.clear();
@@ -1638,26 +1715,30 @@ async function toggleSelectionEffect(button) {
   }
 }
 
-async function saveEffect(effectType) {
+async function clearSelectedEffects(channels) {
   const range = selectionInfo();
-  if (!range) {
+  if (!range?.contiguous) {
     setSaveStatus("请先选择连续文字", true);
     return;
   }
-  if (!range.contiguous) {
-    setSaveStatus("当前选择不连续，请补齐或取消多余文字", true);
-    return;
-  }
+  const videoId = systemAssetId("transform.scale");
   try {
     savingEffect = true;
     renderControls();
     setSaveStatus("正在保存");
     await requestJson("/api/effects", {
-      method: "PUT",
-      body: JSON.stringify({ effects: replacementEffects(range, effectType), default_source: "human" }),
+      method: "POST",
+      body: JSON.stringify({
+        replace_range: true,
+        enabled: false,
+        clear_channels: channels,
+        target: { asset_id: videoId },
+        start_word_index: range.start,
+        end_word_index: range.end,
+      }),
     });
     selectedWords.clear();
-    setSaveStatus(effectType ? "已保存并热重载" : "已清除并热重载");
+    setSaveStatus("已清除并热重载");
     await loadState();
     previewSelectionRange(range);
   } catch (error) {
@@ -1671,6 +1752,10 @@ async function saveEffect(effectType) {
 async function startRender() {
   if (!renderEngineCompatible) {
     setSaveStatus("导出服务版本过旧，请重启服务后再导出", true);
+    return;
+  }
+  if (state.profileLock?.ok === false) {
+    setSaveStatus("Profile 与 lock 不一致，请先同步后再导出", true);
     return;
   }
   if (!window.confirm("确认使用当前全部效果生成最终 MP4 吗")) return;
@@ -1701,6 +1786,37 @@ function scalePercentAtTime(effect, time) {
   return 100 + (effect.scale_percent - 100) * progress;
 }
 
+function channelValueAtTime(effect, time, fromKey, toKey, fallback = 1) {
+  if (!effect || time < effect.start || time >= effect.end) return fallback;
+  const from = Number(effect[fromKey] ?? fallback);
+  const to = Number(effect[toKey] ?? fallback);
+  if (effect.interpolation !== "linear") return to;
+  const duration = effect.end - effect.start;
+  if (duration <= 0) return fallback;
+  const progress = Math.max(0, Math.min(1, (time - effect.start) / duration));
+  return from + (to - from) * progress;
+}
+
+function overlayVisualAt(active, time, itemId = null) {
+  const effects = active?.effects || {};
+  const applies = (entry) => !entry.item_id || entry.item_id === itemId;
+  const scaleStates = [...(effects.scale || []), ...(effects.entryScale || []).filter(applies)];
+  const opacityStates = [...(effects.opacity || []).filter(applies), ...(effects.entryOpacity || []).filter(applies)];
+  const textStyle = (effects.textStyle || []).find((entry) => (
+    applies(entry) && time >= entry.start && time < entry.end
+  ));
+  return {
+    scale: scaleStates.reduce((value, entry) => (
+      value * channelValueAtTime(entry, time, "from_scale", "to_scale", 1)
+    ), 1),
+    opacity: opacityStates.reduce((value, entry) => (
+      value * channelValueAtTime(entry, time, "from_opacity", "to_opacity", 1)
+    ), 1),
+    fontScale: Number(textStyle?.font_scale || 1),
+    color: textStyle?.color || null,
+  };
+}
+
 function currentWordAt(time) {
   if (!state) return -1;
   const exact = state.words.find((word) => time >= word.start && time < word.end);
@@ -1717,7 +1833,11 @@ function currentStructuredOverlayAt(time) {
 }
 
 function currentImageOverlayAt(time) {
-  return playbackImageOverlays.find((overlay) => time >= overlay.start && time < overlay.end) || null;
+  return playbackImageOverlays.find((overlay) => (
+    time >= overlay.start
+    && time < overlay.end
+    && !(overlay.suppression_ranges || []).some((range) => time >= range.start && time < range.end)
+  )) || null;
 }
 
 function drawPreviewFrame(percent) {
@@ -1727,14 +1847,12 @@ function drawPreviewFrame(percent) {
   const videoWidth = elements.video.videoWidth;
   const videoHeight = elements.video.videoHeight;
   if (!canvasWidth || !canvasHeight || !videoWidth || !videoHeight) return;
-
   const containScale = Math.min(canvasWidth / videoWidth, canvasHeight / videoHeight);
   const effectScale = percent / 100;
   const drawWidth = videoWidth * containScale * effectScale;
   const drawHeight = videoHeight * containScale * effectScale;
   const drawX = (canvasWidth - drawWidth) / 2;
   const drawY = (canvasHeight - drawHeight) / 2;
-
   previewContext.fillStyle = "#000";
   previewContext.fillRect(0, 0, canvasWidth, canvasHeight);
   previewContext.imageSmoothingEnabled = true;
@@ -1788,7 +1906,7 @@ function renderSubtitleOverlay(caption) {
   renderCaptionSelection();
 }
 
-function renderImageOverlay(active) {
+function renderImageOverlay(active, time) {
   const overlay = elements.imageOverlay;
   if (!active) {
     overlay.style.display = "none";
@@ -1804,6 +1922,9 @@ function renderImageOverlay(active) {
   overlay.style.top = `${box.y * 100}%`;
   overlay.style.width = `${box.width * 100}%`;
   overlay.style.height = `${box.height * 100}%`;
+  const visual = overlayVisualAt(active, time);
+  elements.imageOverlayContent.style.transform = `scale(${visual.scale})`;
+  elements.imageOverlayContent.style.opacity = String(visual.opacity);
   if (overlay.dataset.assetUrl !== active.asset_url) {
     elements.imageOverlayContent.src = active.asset_url;
     elements.imageOverlayContent.alt = `贴图 ${active.source_text || ""}`.trim();
@@ -1816,13 +1937,11 @@ function renderImageOverlay(active) {
 function applyStructuredEntryAnimation(active, time) {
   for (const itemElement of elements.structuredList.querySelectorAll("[data-item-id]")) {
     const item = active.items.find((candidate) => candidate.id === itemElement.dataset.itemId);
-    const shouldAnimate = active.enter_animation === "pop"
-      && active.entering_item_id === item?.id;
-    const progress = shouldAnimate
-      ? clamp((time - item.start) / Number(active.animation_duration || 0.18), 0, 1)
-      : 1;
-    itemElement.style.opacity = String(progress);
-    itemElement.style.transform = `scale(${0.85 + 0.15 * progress})`;
+    const visual = overlayVisualAt(active, time, item?.id);
+    itemElement.style.opacity = String(visual.opacity);
+    itemElement.style.transform = `scale(${visual.scale})`;
+    itemElement.style.fontSize = `${visual.fontScale}em`;
+    itemElement.style.color = visual.color || "";
   }
 }
 
@@ -1842,23 +1961,23 @@ function renderStructuredOverlay(active, time) {
   const minDimension = Math.min(frameWidth, frameHeight);
   const fontSize = Math.max(12, minDimension * style.font_size_ratio);
   const strokeWidth = Math.max(1, minDimension * style.stroke_width_ratio);
-  const isKeywords = active.type === "progressive_keywords";
-  overlay.classList.toggle("structured-overlay--keywords", isKeywords);
-  overlay.style.display = isKeywords ? "block" : "flex";
-  overlay.style.left = `${(isKeywords ? 0 : box.x) * 100}%`;
-  overlay.style.top = `${(isKeywords ? 0 : box.y) * 100}%`;
-  overlay.style.width = `${(isKeywords ? 1 : box.width) * 100}%`;
-  overlay.style.height = isKeywords ? "100%" : "auto";
+  const isItems = active.layout_mode === "items";
+  overlay.classList.toggle("structured-overlay--keywords", isItems);
+  overlay.style.display = isItems ? "block" : "flex";
+  overlay.style.left = `${(isItems ? 0 : box.x) * 100}%`;
+  overlay.style.top = `${(isItems ? 0 : box.y) * 100}%`;
+  overlay.style.width = `${(isItems ? 1 : box.width) * 100}%`;
+  overlay.style.height = isItems ? "100%" : "auto";
   overlay.style.fontFamily = `"${style.font_family}", "Microsoft YaHei", sans-serif`;
   overlay.style.fontSize = `${fontSize}px`;
   overlay.style.color = style.color;
   overlay.style.webkitTextStroke = `${strokeWidth}px ${style.stroke_color}`;
-  elements.structuredList.style.gap = isKeywords ? "0" : `${frameHeight * style.item_gap_ratio}px`;
+  elements.structuredList.style.gap = isItems ? "0" : `${frameHeight * style.item_gap_ratio}px`;
   if (overlay.dataset.activeState !== active.id) {
     elements.structuredList.replaceChildren();
     for (const item of active.items) {
       const row = document.createElement("div");
-      row.className = isKeywords ? "structured-keyword" : "structured-list__item";
+      row.className = isItems ? "structured-keyword" : "structured-list__item";
       row.dataset.itemId = item.id;
       row.textContent = item.lines.join("\n");
       const resizeHandle = document.createElement("span");
@@ -1869,7 +1988,7 @@ function renderStructuredOverlay(active, time) {
     }
     overlay.dataset.activeState = active.id;
   }
-  if (isKeywords) {
+  if (isItems) {
     for (const item of active.items) {
       const row = elements.structuredList.querySelector(`[data-item-id="${CSS.escape(item.id)}"]`);
       if (!row) continue;
@@ -1891,7 +2010,7 @@ function animationTick() {
     const effect = currentEffectAt(time);
     const percent = scalePercentAtTime(effect, time);
     drawPreviewFrame(percent);
-    renderImageOverlay(currentImageOverlayAt(time));
+    renderImageOverlay(currentImageOverlayAt(time), time);
     renderStructuredOverlay(currentStructuredOverlayAt(time), time);
     renderSubtitleOverlay(currentCaptionAt(time));
     elements.activeEffectBadge.textContent = effect
@@ -1923,52 +2042,14 @@ elements.subtitleOverlay.addEventListener("pointerdown", beginCaptionInteraction
 elements.subtitleOverlay.addEventListener("pointermove", updateCaptionInteraction);
 elements.subtitleOverlay.addEventListener("pointerup", (event) => finishCaptionInteraction(event));
 elements.subtitleOverlay.addEventListener("pointercancel", (event) => finishCaptionInteraction(event, true));
-elements.subtitleOverlay.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    const caption = currentCaptionAt(elements.video.currentTime || 0);
-    if (caption) selectCaptionText(caption);
-    captionBoxSelected = true;
-    renderCaptionSelection();
-  } else if (event.key === "Escape") {
-    captionBoxSelected = false;
-    clearSelectedTextTarget("caption");
-    renderCaptionSelection();
-  }
-});
 elements.imageOverlay.addEventListener("pointerdown", beginImageInteraction);
 elements.imageOverlay.addEventListener("pointermove", updateImageInteraction);
 elements.imageOverlay.addEventListener("pointerup", (event) => finishImageInteraction(event));
 elements.imageOverlay.addEventListener("pointercancel", (event) => finishImageInteraction(event, true));
-elements.imageOverlay.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    imageBoxSelected = true;
-    clearSelectedTextTarget();
-    renderImageSelection();
-  } else if (event.key === "Escape") {
-    imageBoxSelected = false;
-    renderImageSelection();
-  }
-});
 elements.structuredOverlay.addEventListener("pointerdown", beginStructuredInteraction);
 elements.structuredOverlay.addEventListener("pointermove", updateStructuredInteraction);
 elements.structuredOverlay.addEventListener("pointerup", (event) => finishStructuredInteraction(event));
 elements.structuredOverlay.addEventListener("pointercancel", (event) => finishStructuredInteraction(event, true));
-elements.structuredOverlay.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    const active = currentStructuredOverlayAt(elements.video.currentTime || 0);
-    if (active) selectStructuredText(active.overlay_id);
-    structuredBoxSelected = true;
-    renderStructuredSelection();
-  } else if (event.key === "Escape") {
-    structuredBoxSelected = false;
-    structuredSelectedItemId = null;
-    clearSelectedTextTarget("overlay");
-    renderStructuredSelection();
-  }
-});
 document.addEventListener("pointerdown", (event) => {
   const clickedTextStyleAction = event.target.closest?.("[data-text-style-action]");
   if (!elements.subtitleOverlay.contains(event.target) && !clickedTextStyleAction) {
@@ -1998,9 +2079,6 @@ document.addEventListener("pointerdown", (event) => {
   }
 });
 elements.playPauseButton.addEventListener("click", togglePlayback);
-elements.newListButton.addEventListener("click", createListFromSelection);
-elements.newKeywordsButton.addEventListener("click", createKeywordsFromSelection);
-elements.newImageButton.addEventListener("click", createImageFromSelection);
 elements.previewCanvas.addEventListener("click", togglePlayback);
 elements.seekSlider.addEventListener("pointerdown", () => { seeking = true; });
 elements.seekSlider.addEventListener("input", () => {
@@ -2019,21 +2097,16 @@ elements.video.addEventListener("pause", updatePlayerControls);
 const previewResizeObserver = new ResizeObserver(fitVideoFrame);
 previewResizeObserver.observe(elements.previewPanel);
 
-for (const button of elements.directEffectButtons) {
-  button.addEventListener("click", () => {
-    void saveEffect(button.dataset.effectType || null);
-  });
-}
-for (const button of elements.selectionEffectButtons) {
-  button.addEventListener("click", () => void toggleSelectionEffect(button));
-}
-
 const events = new EventSource("/api/events");
 events.addEventListener("ready", () => {
   setConnection("已连接", "ok");
   void loadState({ external: true });
 });
 events.addEventListener("state", () => {
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(() => loadState({ external: true }), 100);
+});
+events.addEventListener("composition-updated", () => {
   clearTimeout(reloadTimer);
   reloadTimer = setTimeout(() => loadState({ external: true }), 100);
 });

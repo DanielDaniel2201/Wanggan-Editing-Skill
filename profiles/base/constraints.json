@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "constraints": [
+    {
+      "id": "base.effect-capability-match",
+      "kind": "capability-match"
+    },
+    {
+      "id": "base.effect-channel-conflict",
+      "kind": "exclusive-per-channel"
+    },
+    {
+      "id": "base.primary-overlay-exclusion",
+      "kind": "exclusive-active-assets",
+      "asset_types": ["base.keywords", "base.list", "base.image"]
+    },
+    {
+      "id": "base.structured-text-suppresses-captions",
+      "kind": "suppress",
+      "when": {
+        "asset_types": ["base.keywords", "base.list"],
+        "phase": "item_active"
+      },
+      "targets": ["base.captions"]
+    },
+    {
+      "id": "base.overlay-layer-order",
+      "kind": "layer-order",
+      "order": ["base.video", "base.image", "base.captions", ["base.keywords", "base.list"]]
+    },
+    {
+      "id": "base.word-boundaries",
+      "kind": "word-boundaries"
+    },
+    {
+      "id": "base.screen-bounds",
+      "kind": "screen-bounds"
+    },
+    {
+      "id": "base.asset-limits",
+      "kind": "asset-limits",
+      "rules": [
+        {
+          "asset_type": "base.keywords",
+          "max_items": 4,
+          "item_text": { "min_chars": 2, "max_chars": 3 },
+          "items_ordered": true
+        },
+        {
+          "asset_type": "base.list",
+          "max_items": 8,
+          "item_text": { "max_chars": 120 },
+          "items_ordered": true
+        },
+        {
+          "asset_type": "base.image",
+          "extensions": [".png", ".jpg", ".jpeg", ".webp", ".bmp"],
+          "min_box": 0.05
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "test-ip",
+  "version": "1.0.0",
+  "extends": ["base"],
+  "selection_rules": ["selection-rules.md"],
+  "asset_types": [],
+  "effect_types": ["effect-types/test-fade.json"],
+  "constraints": [],
+  "runtime_modules": []
+}

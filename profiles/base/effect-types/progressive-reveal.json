@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "kind": "effect_type",
+  "id": "base.progressive-reveal",
+  "operator": "core.visibility.item-sequence",
+  "requires_capabilities": ["ordered-items"],
+  "timing_models": ["asset_items"],
+  "writes_channels": ["visibility.items"],
+  "overlap_policy": "exclusive-per-channel",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["retain_until"],
+    "properties": {
+      "retain_until": { "enum": ["asset_end"] }
+    }
+  },
+  "ui": {
+    "label": "逐条累积出现"
+  }
+}

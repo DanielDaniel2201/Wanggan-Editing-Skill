@@ -3,24 +3,26 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  COMPILER_VERSION,
   WangganError,
-  effectDefinition,
-  loadEffects,
-  loadProject,
-  loadTranscript,
-  projectState,
+  loadEditorState,
+  readJson,
   saveEditorState,
-  saveEffects,
-  validateEffects,
 } from "./lib/core.mjs";
-import { compilePlaybackEffects, renderProject } from "./lib/render.mjs";
+import { compileProject } from "./lib/compiler.mjs";
 import {
-  compileScreenOverlays,
-  loadOverlays,
-  saveOverlays,
-} from "./lib/captions.mjs";
+  applyAssetPatch,
+  applyEffectRange,
+  loadComposition,
+  nextAssetId,
+  nextEffectId,
+  removeAsset,
+  saveComposition,
+} from "./lib/composition.mjs";
+import { resolveWordRange } from "./lib/timeline.mjs";
+import { renderProject } from "./lib/render.mjs";
 
-export const RENDER_ENGINE_VERSION = 18;
+export const RENDER_ENGINE_VERSION = COMPILER_VERSION;
 
 const uiRoot = fileURLToPath(new URL("../assets/review-ui/", import.meta.url));
 const contentTypes = {
@@ -124,114 +126,6 @@ function serveOverlayImage(response, imagePath) {
   response.end(body);
 }
 
-function replaceEffects(project, inputs, defaultSource = "ai") {
-  const words = loadTranscript(project.transcriptPath);
-  const effects = validateEffects(inputs, words, { defaultSource });
-  saveEffects(project.effectsPath, effects);
-  return effects;
-}
-
-function mutateEffects(project, mutation) {
-  const words = loadTranscript(project.transcriptPath);
-  const current = loadEffects(project.effectsPath, words);
-  const nextInputs = mutation(current, words);
-  const effects = validateEffects(nextInputs, words);
-  saveEffects(project.effectsPath, effects);
-  return effects;
-}
-
-function effectInput(effect, overrides = {}) {
-  return {
-    target: effect.target,
-    effect_type: effect.effect_type,
-    start_word_index: effect.start_word_index,
-    end_word_index: effect.end_word_index,
-    source: effect.source,
-    human_modified: effect.human_modified,
-    ...overrides,
-  };
-}
-
-function applySelectionChange(effects, range, change) {
-  const definition = effectDefinition(change?.effect_type);
-  if (!definition) {
-    throw new WangganError("不支持的 effect_type", { effect_type: change?.effect_type ?? null });
-  }
-  const target = String(change?.target || definition.target);
-  if (target !== definition.target) {
-    throw new WangganError("effect_type 与 target 不匹配", {
-      effect_type: change.effect_type,
-      target,
-      expectedTarget: definition.target,
-    });
-  }
-  if (typeof change.enabled !== "boolean") {
-    throw new WangganError("选择效果必须提交 enabled: true 或 false");
-  }
-
-  const next = [];
-  let modifiesAiEffect = false;
-  for (const effect of effects) {
-    const overlaps = effect.target === target
-      && effect.start_word_index <= range.end
-      && effect.end_word_index >= range.start;
-    const shouldCut = overlaps && (change.enabled || effect.effect_type === change.effect_type);
-    if (!shouldCut) {
-      next.push(effectInput(effect));
-      continue;
-    }
-    if (effect.source === "ai") modifiesAiEffect = true;
-    if (effect.start_word_index < range.start) {
-      next.push(effectInput(effect, {
-        end_word_index: range.start - 1,
-        human_modified: true,
-      }));
-    }
-    if (effect.end_word_index > range.end) {
-      next.push(effectInput(effect, {
-        start_word_index: range.end + 1,
-        human_modified: true,
-      }));
-    }
-  }
-  if (change.enabled) {
-    next.push({
-      target,
-      effect_type: change.effect_type,
-      start_word_index: range.start,
-      end_word_index: range.end,
-      source: modifiesAiEffect ? "ai" : "human",
-      human_modified: modifiesAiEffect,
-    });
-  }
-  return next;
-}
-
-function mutateSelectionEffects(project, body) {
-  const words = loadTranscript(project.transcriptPath);
-  const start = Number(body?.start_word_index);
-  const end = Number(body?.end_word_index);
-  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= words.length) {
-    throw new WangganError("选择的逐字稿范围无效", {
-      start_word_index: body?.start_word_index ?? null,
-      end_word_index: body?.end_word_index ?? null,
-      wordCount: words.length,
-    });
-  }
-  if (!Array.isArray(body?.changes) || body.changes.length === 0) {
-    throw new WangganError("至少需要提交一个选择效果变化");
-  }
-  let inputs = loadEffects(project.effectsPath, words).map((effect) => effectInput(effect));
-  for (const change of body.changes) {
-    inputs = applySelectionChange(inputs, { start, end }, change);
-  }
-  const effects = validateEffects(inputs.map(({ id: _id, ...effect }) => effect), words, {
-    defaultSource: "human",
-  });
-  saveEffects(project.effectsPath, effects);
-  return effects;
-}
-
 export function nextAvailableOutputPath(defaultOutputPath) {
   if (!fs.existsSync(defaultOutputPath)) return defaultOutputPath;
   const parsed = path.parse(defaultOutputPath);
@@ -241,15 +135,67 @@ export function nextAvailableOutputPath(defaultOutputPath) {
   }
 }
 
-export function startServer(projectInput, port = 8911) {
-  const project = typeof projectInput === "string" ? loadProject(projectInput) : projectInput;
+function publicState(ir) {
+  const editorState = loadEditorState(ir.project.editorStatePath, {
+    wordCount: ir.words.length,
+    duration: ir.project.duration,
+  });
+  const renderStatus = fs.existsSync(ir.project.renderStatusPath)
+    ? readJson(ir.project.renderStatusPath)
+    : { state: "idle" };
+  return {
+    project: {
+      version: ir.project.version,
+      videoPath: ir.project.videoPath,
+      transcriptPath: ir.project.transcriptPath,
+      subtitlePath: ir.project.subtitlePath,
+      outputPath: ir.project.outputPath,
+      duration: ir.project.duration,
+      displayWidth: ir.project.displayWidth,
+      displayHeight: ir.project.displayHeight,
+    },
+    words: ir.words,
+    composition: ir.composition,
+    catalog: ir.catalog,
+    profile: ir.profile,
+    profileLock: ir.profileLock,
+    editorState,
+    renderStatus,
+    playbackScene: ir.playbackScene,
+    playbackEffects: ir.playbackEffects,
+    playbackCaptions: ir.playbackCaptions,
+    playbackOverlays: ir.playbackOverlays,
+    playbackImageOverlays: ir.playbackImageOverlays,
+    captionTrack: ir.captionTrack,
+    structuredOverlayTrack: ir.structuredOverlayTrack,
+    imageOverlayTrack: ir.imageOverlayTrack,
+    renderEngineVersion: RENDER_ENGINE_VERSION,
+  };
+}
+
+export async function startServer(contextInput, port = 8911) {
+  const context = contextInput.project ? contextInput : null;
+  if (!context) throw new WangganError("审查服务需要已加载的工程上下文");
   const clients = new Set();
   let renderRunning = false;
 
   const broadcast = (reason) => {
     const data = JSON.stringify({ reason, at: new Date().toISOString() });
-    for (const client of clients) client.write(`event: state\ndata: ${data}\n\n`);
+    for (const client of clients) {
+      client.write(`event: state\ndata: ${data}\n\n`);
+      client.write(`event: ${reason}\ndata: ${data}\n\n`);
+    }
   };
+
+  const compile = async () => compileProject(context.project, { context });
+
+  const persist = (composition) => saveComposition(
+    context.project.compositionPath,
+    composition,
+    context.profile,
+    context.words,
+    context.project,
+  );
 
   const server = http.createServer(async (request, response) => {
     try {
@@ -258,61 +204,29 @@ export function startServer(projectInput, port = 8911) {
 
       if (request.method === "GET" && serveStatic(response, pathname)) return;
       if (request.method === "GET" && pathname === "/media") {
-        serveMedia(request, response, project.previewVideoPath);
+        serveMedia(request, response, context.project.previewVideoPath);
         return;
       }
       const overlayImageMatch = /^\/overlay-images\/([^/]+)$/.exec(pathname);
       if (request.method === "GET" && overlayImageMatch) {
-        const state = projectState(project);
-        const overlays = loadOverlays(project.overlaysPath, state.words);
-        const compiled = compileScreenOverlays(project, state.words, overlays, state.effects);
-        const imageOverlay = compiled.imageTrack.groups.find((candidate) => (
-          candidate.id === overlayImageMatch[1]
-        ));
-        if (!imageOverlay) throw new WangganError("找不到贴图素材", { id: overlayImageMatch[1] }, 404);
-        serveOverlayImage(response, imageOverlay.resolved_image_path);
+        const ir = await compile();
+        const image = ir.imageOverlayTrack.groups.find((candidate) => candidate.id === overlayImageMatch[1]);
+        if (!image) throw new WangganError("找不到贴图素材", { id: overlayImageMatch[1] }, 404);
+        serveOverlayImage(response, image.resolved_image_path);
         return;
       }
       if (request.method === "GET" && pathname === "/api/state") {
-        const state = projectState(project);
-        const overlays = loadOverlays(project.overlaysPath, state.words);
-        const compiledOverlays = compileScreenOverlays(project, state.words, overlays, state.effects);
-        const { captionTrack, structuredTrack, imageTrack } = compiledOverlays;
-        sendJson(response, 200, {
-          ...state,
-          overlays,
-          captionTrack: {
-            enabled: captionTrack.enabled,
-            source: captionTrack.source,
-            sourcePath: captionTrack.sourcePath,
-            cueCount: captionTrack.cueCount,
-            effectCount: captionTrack.effectCount,
-            playbackCueCount: captionTrack.playbackCueCount,
-            box: captionTrack.box,
-            style: captionTrack.style,
-            fontSize: captionTrack.fontSize,
-          },
-          structuredOverlayTrack: {
-            enabled: structuredTrack.enabled,
-            groupCount: structuredTrack.groupCount,
-            groups: structuredTrack.groups,
-            suppressionRanges: structuredTrack.suppressionRanges,
-          },
-          imageOverlayTrack: {
-            enabled: imageTrack.enabled,
-            groupCount: imageTrack.groupCount,
-            groups: imageTrack.groups,
-          },
-          playbackCaptions: compiledOverlays.playbackCaptions,
-          playbackOverlays: compiledOverlays.playbackOverlays,
-          playbackImageOverlays: compiledOverlays.playbackImageOverlays,
-          playbackEffects: compilePlaybackEffects(state.effects),
-          renderEngineVersion: RENDER_ENGINE_VERSION,
-        });
+        sendJson(response, 200, publicState(await compile()));
+        return;
+      }
+      if (request.method === "GET" && pathname === "/api/profile") {
+        sendJson(response, 200, context.profile.catalog());
         return;
       }
       if (request.method === "GET" && pathname === "/api/render-status") {
-        sendJson(response, 200, projectState(project).renderStatus);
+        sendJson(response, 200, fs.existsSync(context.project.renderStatusPath)
+          ? readJson(context.project.renderStatusPath)
+          : { state: "idle" });
         return;
       }
       if (request.method === "GET" && pathname === "/api/events") {
@@ -326,129 +240,141 @@ export function startServer(projectInput, port = 8911) {
         request.on("close", () => clients.delete(response));
         return;
       }
+      if (request.method === "PUT" && pathname === "/api/composition") {
+        const body = await readBody(request);
+        const saved = persist(body);
+        sendJson(response, 200, { composition: saved });
+        broadcast("composition-updated");
+        return;
+      }
+      if (request.method === "POST" && pathname === "/api/assets") {
+        const body = await readBody(request);
+        const current = loadComposition(context.project.compositionPath, context.profile, context.words, context.project);
+        const typeDef = context.profile.assetTypes.get(body.type);
+        if (!typeDef) throw new WangganError("未注册的 AssetType", { type: body.type });
+        const asset = {
+          id: body.id || nextAssetId(body.type, current.assets),
+          type: body.type,
+          enabled: body.enabled !== false,
+          source: body.source || { kind: "agent-generated" },
+          lifecycle: body.lifecycle,
+          props: body.props || {},
+          origin: { created_by: "human", human_modified: false },
+        };
+        if (!asset.lifecycle && body.props?.items?.length) {
+          asset.lifecycle = {
+            kind: "word_range",
+            start_word_index: body.props.items[0].start_word_index,
+            end_word_index: body.props.items.at(-1).end_word_index,
+          };
+        }
+        const extraEffects = [];
+        const sourceEffects = body.effects || typeDef.ui?.default_effects || [];
+        for (const effect of sourceEffects) {
+          extraEffects.push({
+            id: effect.id || nextEffectId([...current.effects, ...extraEffects]),
+            type: effect.type,
+            target: { asset_id: asset.id },
+            timing: effect.timing,
+            config: effect.config || {},
+            origin: { created_by: "human", human_modified: false },
+          });
+        }
+        const next = {
+          ...current,
+          assets: [...current.assets, asset],
+          effects: [...current.effects, ...extraEffects],
+        };
+        const saved = persist(next);
+        sendJson(response, 201, { composition: saved, asset });
+        broadcast("composition-updated");
+        return;
+      }
+      const assetMatch = /^\/api\/assets\/([^/]+)$/.exec(pathname);
+      if (assetMatch && request.method === "PATCH") {
+        const body = await readBody(request);
+        const current = loadComposition(context.project.compositionPath, context.profile, context.words, context.project);
+        const saved = persist(applyAssetPatch(current, decodeURIComponent(assetMatch[1]), body));
+        sendJson(response, 200, { composition: saved });
+        broadcast("composition-updated");
+        return;
+      }
+      if (assetMatch && request.method === "DELETE") {
+        const current = loadComposition(context.project.compositionPath, context.profile, context.words, context.project);
+        const saved = persist(removeAsset(current, decodeURIComponent(assetMatch[1])));
+        sendJson(response, 200, { composition: saved });
+        broadcast("composition-updated");
+        return;
+      }
       if (request.method === "POST" && pathname === "/api/effects") {
         const body = await readBody(request);
-        const effects = mutateEffects(project, (current) => [
-          ...current,
-          { ...body, source: "human", human_modified: false },
-        ]);
-        sendJson(response, 201, { effects });
-        broadcast("effects-created");
-        return;
-      }
-      if (request.method === "PUT" && pathname === "/api/effects") {
-        const body = await readBody(request);
-        const effects = replaceEffects(
-          project,
-          Array.isArray(body) ? body : body.effects,
-          body.default_source || "ai",
-        );
-        sendJson(response, 200, { effects });
-        broadcast("effects-replaced");
-        return;
-      }
-      if (request.method === "PATCH" && pathname === "/api/selection-effects") {
-        const body = await readBody(request);
-        const effects = mutateSelectionEffects(project, body);
-        sendJson(response, 200, { effects });
-        broadcast("selection-effects-updated");
+        const current = loadComposition(context.project.compositionPath, context.profile, context.words, context.project);
+        if (body.replace_range) {
+          const saved = persist(applyEffectRange(current, body, context.words));
+          sendJson(response, 201, { composition: saved, effects: saved.effects });
+          broadcast("composition-updated");
+          return;
+        }
+        const effect = {
+          id: body.id || nextEffectId(current.effects),
+          type: body.type,
+          target: body.target,
+          timing: body.timing,
+          config: body.config || {},
+          origin: { created_by: "human", human_modified: false },
+        };
+        const saved = persist({ ...current, effects: [...current.effects, effect] });
+        sendJson(response, 201, { composition: saved, effect, effects: saved.effects });
+        broadcast("composition-updated");
         return;
       }
       const effectMatch = /^\/api\/effects\/([^/]+)$/.exec(pathname);
       if (effectMatch && request.method === "PATCH") {
         const id = decodeURIComponent(effectMatch[1]);
         const body = await readBody(request);
-        const effects = mutateEffects(project, (current) => {
-          const existing = current.find((effect) => effect.id === id);
-          if (!existing) throw new WangganError("找不到要修改的效果", { id }, 404);
-          return current.map((effect) => effect.id === id
-            ? { ...effect, ...body, id, source: effect.source, human_modified: true }
-            : effect);
-        });
-        sendJson(response, 200, { effects });
-        broadcast("effects-updated");
+        const current = loadComposition(context.project.compositionPath, context.profile, context.words, context.project);
+        const existing = current.effects.find((effect) => effect.id === id);
+        if (!existing) throw new WangganError("找不到要修改的效果", { id }, 404);
+        const next = {
+          ...current,
+          effects: current.effects.map((effect) => effect.id === id
+            ? {
+              ...effect,
+              ...body,
+              id,
+              origin: { created_by: effect.origin.created_by, human_modified: true },
+            }
+            : effect),
+        };
+        const saved = persist(next);
+        sendJson(response, 200, { composition: saved, effects: saved.effects });
+        broadcast("composition-updated");
         return;
       }
       if (effectMatch && request.method === "DELETE") {
         const id = decodeURIComponent(effectMatch[1]);
-        const effects = mutateEffects(project, (current) => {
-          if (!current.some((effect) => effect.id === id)) {
-            throw new WangganError("找不到要删除的效果", { id }, 404);
-          }
-          return current.filter((effect) => effect.id !== id);
+        const current = loadComposition(context.project.compositionPath, context.profile, context.words, context.project);
+        if (!current.effects.some((effect) => effect.id === id)) {
+          throw new WangganError("找不到要删除的效果", { id }, 404);
+        }
+        const saved = persist({
+          ...current,
+          effects: current.effects.filter((effect) => effect.id !== id),
         });
-        sendJson(response, 200, { effects });
-        broadcast("effects-deleted");
-        return;
-      }
-      if (request.method === "PATCH" && pathname === "/api/overlays/captions") {
-        const body = await readBody(request);
-        const hasEnabled = Object.hasOwn(body, "enabled");
-        const hasBox = Object.hasOwn(body, "box");
-        const hasCueFont = Object.hasOwn(body, "font_family");
-        const hasCueFontSize = Object.hasOwn(body, "font_size_ratio");
-        const hasCueOverride = hasCueFont || hasCueFontSize;
-        if (!hasEnabled && !hasBox && !hasCueOverride) {
-          throw new WangganError("字幕修改必须提交 enabled、box、cue 字体或 cue 字号");
-        }
-        if (hasEnabled && typeof body.enabled !== "boolean") {
-          throw new WangganError("字幕开关必须是 enabled: true 或 false");
-        }
-        if (hasBox && (!body.box || typeof body.box !== "object" || Array.isArray(body.box))) {
-          throw new WangganError("字幕区块必须是 box 对象");
-        }
-        if (hasCueOverride && (
-          typeof body.cue_id !== "string"
-          || !/^caption-\d{3,}$/.test(body.cue_id)
-        )) {
-          throw new WangganError("单条字幕样式必须提交有效的 cue_id");
-        }
-        if (hasCueFont && typeof body.font_family !== "string") {
-          throw new WangganError("字幕字体必须是字符串");
-        }
-        if (hasCueFontSize && !Number.isFinite(Number(body.font_size_ratio))) {
-          throw new WangganError("字幕字号比例必须是数字");
-        }
-        const words = loadTranscript(project.transcriptPath);
-        const overlays = loadOverlays(project.overlaysPath, words);
-        if (hasEnabled) overlays.captions.enabled = body.enabled;
-        if (hasBox) overlays.captions.box = { ...overlays.captions.box, ...body.box };
-        if (hasCueFont) {
-          overlays.captions.cue_fonts = {
-            ...(overlays.captions.cue_fonts || {}),
-            [body.cue_id]: body.font_family,
-          };
-        }
-        if (hasCueFontSize) {
-          overlays.captions.cue_font_size_ratios = {
-            ...(overlays.captions.cue_font_size_ratios || {}),
-            [body.cue_id]: Number(body.font_size_ratio),
-          };
-        }
-        const saved = saveOverlays(project.overlaysPath, overlays, words);
-        sendJson(response, 200, { overlays: saved });
-        broadcast("captions-updated");
-        return;
-      }
-      if (request.method === "PUT" && pathname === "/api/overlays") {
-        const body = await readBody(request);
-        const words = loadTranscript(project.transcriptPath);
-        const saved = saveOverlays(project.overlaysPath, body, words);
-        sendJson(response, 200, { overlays: saved });
-        broadcast("overlays-updated");
+        sendJson(response, 200, { composition: saved, effects: saved.effects });
+        broadcast("composition-updated");
         return;
       }
       if (request.method === "POST" && pathname === "/api/save-project") {
         const body = await readBody(request);
-        const state = projectState(project);
-        const editorState = saveEditorState(project.editorStatePath, {
+        const editorState = saveEditorState(context.project.editorStatePath, {
           version: 1,
           savedAt: new Date().toISOString(),
           currentTime: body.currentTime,
           selectedWordIndexes: body.selectedWordIndexes,
         }, {
-          wordCount: state.words.length,
-          duration: project.duration,
+          wordCount: context.words.length,
+          duration: context.project.duration,
         });
         sendJson(response, 200, { ok: true, editorState });
         broadcast("project-saved");
@@ -456,10 +382,14 @@ export function startServer(projectInput, port = 8911) {
       }
       if (request.method === "POST" && pathname === "/api/render") {
         if (renderRunning) throw new WangganError("当前已有出片任务正在运行", null, 409);
+        const ir = await compile();
+        if (!ir.profileLock.ok) {
+          throw new WangganError("Profile 与 lock 不一致，请先运行 profile sync", ir.profileLock);
+        }
         const body = await readBody(request);
-        const outputPath = body.outputPath || nextAvailableOutputPath(project.outputPath);
+        const outputPath = body.outputPath || nextAvailableOutputPath(context.project.outputPath);
         renderRunning = true;
-        renderProject(project, { outputPath })
+        renderProject(context.project, { outputPath, context, ir })
           .then(() => broadcast("render-complete"))
           .catch(() => broadcast("render-failed"))
           .finally(() => { renderRunning = false; });
@@ -473,15 +403,15 @@ export function startServer(projectInput, port = 8911) {
     }
   });
 
-  const watcher = fs.watch(project.projectDir, { persistent: false }, (_eventType, fileName) => {
+  const watcher = fs.watch(context.project.projectDir, { persistent: false }, (_eventType, fileName) => {
     const name = fileName?.toString() || "";
     if (
-      name === path.basename(project.effectsPath)
-      || name === path.basename(project.overlaysPath)
-      || name === path.basename(project.editorStatePath)
-      || name === path.basename(project.renderStatusPath)
+      name === path.basename(context.project.compositionPath)
+      || name === path.basename(context.project.editorStatePath)
+      || name === path.basename(context.project.renderStatusPath)
+      || name === path.basename(context.project.profileLockPath)
     ) {
-      broadcast(name);
+      broadcast(name === path.basename(context.project.profileLockPath) ? "profile-mismatch" : "composition-updated");
     }
   });
 
@@ -497,9 +427,11 @@ export function startServer(projectInput, port = 8911) {
       const address = server.address();
       resolve({
         server,
-        project,
+        project: context.project,
         url: `http://127.0.0.1:${address.port}/`,
       });
     });
   });
 }
+
+export { resolveWordRange };
