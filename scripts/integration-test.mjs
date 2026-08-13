@@ -16,6 +16,11 @@ import { defaultOverlays, saveOverlays } from "./lib/captions.mjs";
 
 const sourceProject = loadProject(process.argv[2]);
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "wanggan-integration-"));
+const imagePath = path.join(tempDir, "overlay-test.png");
+fs.writeFileSync(
+  imagePath,
+  Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z3S8AAAAASUVORK5CYII=", "base64"),
+);
 const tempProject = {
   ...readJson(sourceProject.projectPath),
   outputPath: path.join(tempDir, "integration-output.mp4"),
@@ -49,6 +54,9 @@ try {
   assert.match(reviewHtml, /id="structuredEditor"/);
   assert.match(reviewHtml, /id="newListButton"/);
   assert.match(reviewHtml, /id="newKeywordsButton"/);
+  assert.match(reviewHtml, /id="newImageButton"/);
+  assert.match(reviewHtml, /id="imageOverlay"/);
+  assert.match(reviewHtml, /id="imageResizeHandle"/);
   assert.match(reviewHtml, /id="fontFamilySelect"/);
   assert.match(reviewHtml, /<option value="Microsoft YaHei">默认粗黑体<\/option>/);
   assert.match(reviewHtml, /<option value="华文中宋">华文中宋<\/option>/);
@@ -78,6 +86,10 @@ try {
   assert.match(reviewApp, /renderStructuredOverlay\(currentStructuredOverlayAt\(time\), time\)/);
   assert.match(reviewApp, /saveOverlayGroups/);
   assert.match(reviewApp, /createKeywordsFromSelection/);
+  assert.match(reviewApp, /createImageFromSelection/);
+  assert.match(reviewApp, /function updateImageInteraction/);
+  assert.match(reviewApp, /mode: event\.target\.closest\("\.image-resize-handle"\) \? "resize" : "move"/);
+  assert.match(reviewApp, /renderImageOverlay\(currentImageOverlayAt\(time\)\)/);
   assert.match(reviewApp, /structured-keyword/);
   assert.match(reviewApp, /structured-item-resize-handle/);
   assert.match(reviewApp, /target: resizingFont \? "font"/);
@@ -102,13 +114,16 @@ try {
   const state = await stateResponse.json();
   assert.ok(state.words.length > 0);
   assert.ok(state.effects.length > 0);
-  assert.equal(state.renderEngineVersion, 17);
+  assert.equal(state.renderEngineVersion, 18);
   assert.ok(Array.isArray(state.playbackEffects));
   assert.ok(state.playbackEffects.length <= state.effects.length);
   assert.ok(Array.isArray(state.playbackCaptions));
   assert.ok(state.playbackCaptions.length > 0);
   assert.ok(Array.isArray(state.playbackOverlays));
   assert.equal(state.playbackOverlays.length, 0);
+  assert.ok(Array.isArray(state.playbackImageOverlays));
+  assert.equal(state.playbackImageOverlays.length, 0);
+  assert.equal(state.imageOverlayTrack.groupCount, 0);
   assert.equal(state.structuredOverlayTrack.groupCount, 0);
   assert.equal(state.captionTrack.enabled, false);
   assert.equal(state.captionTrack.source, sourceProject.subtitlePath ? "srt" : "transcript");
@@ -240,6 +255,37 @@ try {
   assert.equal(keywordState.playbackOverlays[1].enter_animation, "pop");
   assert.equal(keywordState.playbackOverlays[1].items.length, 2);
   assert.ok(keywordState.playbackOverlays[1].items.every((item) => item.box?.unit === "ratio"));
+
+  const imageResponse = await fetch(`${url}api/overlays`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...keywordState.overlays,
+      timed_overlays: [{
+        id: "overlay-image-integration",
+        type: "image",
+        image_path: imagePath,
+        box: { x: 0.6, y: 0.1, width: 0.3, height: 0.25 },
+        start_word_index: keywordStartWordIndex,
+        end_word_index: keywordStartWordIndex + 1,
+        source: "human",
+      }],
+    }),
+  });
+  assert.equal(imageResponse.status, 200);
+  const imageState = await (await fetch(`${url}api/state`)).json();
+  assert.equal(imageState.structuredOverlayTrack.groupCount, 0);
+  assert.equal(imageState.imageOverlayTrack.groupCount, 1);
+  assert.equal(imageState.playbackImageOverlays.length, 1);
+  assert.equal(imageState.playbackImageOverlays[0].fit, "contain");
+  assert.equal(imageState.playbackImageOverlays[0].source_text, sourceWords
+    .slice(keywordStartWordIndex, keywordStartWordIndex + 2)
+    .map((word) => word.text)
+    .join(""));
+  const servedImageResponse = await fetch(`${url}${imageState.playbackImageOverlays[0].asset_url.slice(1)}`);
+  assert.equal(servedImageResponse.status, 200);
+  assert.equal(servedImageResponse.headers.get("content-type"), "image/png");
+  assert.ok((await servedImageResponse.arrayBuffer()).byteLength > 0);
 
   const selectionEnd = Math.min(1, sourceWords.length - 1);
   const selectionEffectsResponse = await fetch(`${url}api/selection-effects`, {

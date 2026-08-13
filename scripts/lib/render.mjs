@@ -170,10 +170,38 @@ export function buildFilter(project, effects, options = {}) {
   const padHeight = even(height * maxScale);
   const expression = buildScaleExpression(effects);
   const videoFilter = `[0:v]scale=w='trunc(${width}*(${expression})/2)*2':h='trunc(${height}*(${expression})/2)*2':eval=frame:flags=lanczos,pad=${padWidth}:${padHeight}:(ow-iw)/2:(oh-ih)/2:black:eval=frame,crop=${width}:${height}:(iw-ow)/2:(ih-oh)/2,setsar=1,format=yuv420p`;
+  const imageOverlays = Array.isArray(options.imageOverlays) ? options.imageOverlays : [];
   const overlayAssFile = options.overlayAssFile || options.captionAssFile;
-  if (!overlayAssFile) return `${videoFilter}[v]`;
+  if (!imageOverlays.length && !overlayAssFile) return `${videoFilter}[v]`;
+  if (!imageOverlays.length) {
+    const safeAssFile = String(overlayAssFile).replace(/['\\]/g, "");
+    return `${videoFilter}[base];[base]ass=filename='${safeAssFile}'[v]`;
+  }
+  const filters = [`${videoFilter}[base0]`];
+  let currentBase = "base0";
+  imageOverlays.forEach((overlay, index) => {
+    const boxWidth = Math.max(2, Math.round(width * overlay.box.width));
+    const boxHeight = Math.max(2, Math.round(height * overlay.box.height));
+    const boxX = Math.round(width * overlay.box.x);
+    const boxY = Math.round(height * overlay.box.y);
+    const imageLabel = `image${index}`;
+    const nextBase = `base${index + 1}`;
+    const inputIndex = Number(overlay.input_index ?? index + 1);
+    filters.push(
+      `[${inputIndex}:v]scale=w=${boxWidth}:h=${boxHeight}:force_original_aspect_ratio=decrease:flags=lanczos,format=rgba,setpts=PTS-STARTPTS[${imageLabel}]`,
+    );
+    filters.push(
+      `[${currentBase}][${imageLabel}]overlay=x='${boxX}+(${boxWidth}-overlay_w)/2':y='${boxY}+(${boxHeight}-overlay_h)/2':enable='gte(t,${overlay.start})*lt(t,${overlay.end})':shortest=0:repeatlast=1[${nextBase}]`,
+    );
+    currentBase = nextBase;
+  });
+  if (!overlayAssFile) {
+    filters.push(`[${currentBase}]format=yuv420p[v]`);
+    return filters.join(";");
+  }
   const safeAssFile = String(overlayAssFile).replace(/['\\]/g, "");
-  return `${videoFilter}[base];[base]ass=filename='${safeAssFile}'[v]`;
+  filters.push(`[${currentBase}]ass=filename='${safeAssFile}'[v]`);
+  return filters.join(";");
 }
 
 export async function renderProject(project, options = {}) {
@@ -181,7 +209,7 @@ export async function renderProject(project, options = {}) {
   const effects = loadEffects(project.effectsPath, words);
   const overlays = loadOverlays(project.overlaysPath, words);
   const compiledOverlays = compileScreenOverlays(project, words, overlays, effects);
-  const { captionTrack, structuredTrack } = compiledOverlays;
+  const { captionTrack, structuredTrack, imageTrack } = compiledOverlays;
   const outputPath = path.resolve(options.outputPath || project.outputPath);
   if (fs.existsSync(outputPath) && !options.overwrite) {
     throw new WangganError("输出文件已经存在，不会覆盖", { outputPath }, 409);
@@ -191,7 +219,11 @@ export async function renderProject(project, options = {}) {
   const overlayAssFile = hasScreenOverlays
     ? path.basename(writeOverlayAss(project, captionTrack, structuredTrack))
     : null;
-  const filter = buildFilter(project, effects, { overlayAssFile });
+  const renderImages = imageTrack.states.map((overlay, index) => ({
+    ...overlay,
+    input_index: index + 1,
+  }));
+  const filter = buildFilter(project, effects, { overlayAssFile, imageOverlays: renderImages });
   const filterPath = path.join(project.projectDir, "render-filter.txt");
   fs.writeFileSync(filterPath, `${filter}\n`, "utf8");
   const statusBase = { outputPath, startedAt: new Date().toISOString(), progress: 0 };
@@ -201,6 +233,7 @@ export async function renderProject(project, options = {}) {
   try {
     await runProcess("ffmpeg", [
       "-y", "-v", "error", "-i", project.videoPath,
+      ...renderImages.flatMap((overlay) => ["-i", overlay.resolved_image_path]),
       "-filter_complex_script", filterPath,
       "-map", "[v]", "-map", "0:a?",
       "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
@@ -247,6 +280,10 @@ export async function renderProject(project, options = {}) {
         enabled: structuredTrack.enabled,
         groupCount: structuredTrack.groupCount,
         stateCount: structuredTrack.states.length,
+      },
+      imageOverlays: {
+        enabled: imageTrack.enabled,
+        count: imageTrack.states.length,
       },
     };
     writeJson(project.renderStatusPath, complete);

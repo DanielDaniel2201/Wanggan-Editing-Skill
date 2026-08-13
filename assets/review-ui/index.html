@@ -26,6 +26,17 @@
             <video id="video" src="/media" playsinline preload="metadata" aria-label="视频预览"></video>
             <canvas id="previewCanvas" class="preview-canvas" aria-label="网感缩放预览"></canvas>
             <div
+              id="imageOverlay"
+              class="image-overlay"
+              role="button"
+              tabindex="0"
+              aria-label="贴图区块，拖动调整位置，右下角调整尺寸"
+              title="拖动调整位置，拖动右下角调整尺寸"
+            >
+              <img id="imageOverlayContent" alt="当前贴图">
+              <span id="imageResizeHandle" class="image-resize-handle" aria-hidden="true"></span>
+            </div>
+            <div
               id="structuredOverlay"
               class="structured-overlay"
               role="button"
@@ -103,12 +114,13 @@
           </select>
         </div>
 
-        <div class="structured-actions" aria-label="结构化文字控制">
+        <div class="structured-actions" aria-label="结构化覆盖层控制">
           <div class="structured-actions__heading">
-            <h3>结构化文字</h3>
+            <h3>结构化覆盖层</h3>
             <div class="structured-actions__buttons">
               <button id="newListButton" class="compact-button" data-structured-action type="button">新建清单</button>
               <button id="newKeywordsButton" class="compact-button" data-structured-action type="button">新建关键词</button>
+              <button id="newImageButton" class="compact-button" data-structured-action type="button">新建贴图</button>
             </div>
           </div>
           <div id="structuredEditor" class="structured-editor"></div>

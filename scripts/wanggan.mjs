@@ -202,7 +202,7 @@ function validateProject(flags) {
   const state = projectState(project);
   const overlays = loadOverlays(project.overlaysPath, state.words);
   const compiledOverlays = compileScreenOverlays(project, state.words, overlays, state.effects);
-  const { captionTrack, structuredTrack } = compiledOverlays;
+  const { captionTrack, structuredTrack, imageTrack } = compiledOverlays;
   print({
     ok: true,
     wordCount: state.words.length,
@@ -220,6 +220,10 @@ function validateProject(flags) {
       groupCount: structuredTrack.groupCount,
       stateCount: structuredTrack.states.length,
     },
+    imageOverlays: {
+      enabled: imageTrack.enabled,
+      count: imageTrack.states.length,
+    },
   });
 }
 
@@ -228,7 +232,7 @@ function fullProjectState(projectInput) {
   const state = projectState(project);
   const overlays = loadOverlays(project.overlaysPath, state.words);
   const compiledOverlays = compileScreenOverlays(project, state.words, overlays, state.effects);
-  const { captionTrack, structuredTrack } = compiledOverlays;
+  const { captionTrack, structuredTrack, imageTrack } = compiledOverlays;
   return {
     ...state,
     overlays,
@@ -244,7 +248,13 @@ function fullProjectState(projectInput) {
       groups: structuredTrack.groups,
       suppressionRanges: structuredTrack.suppressionRanges,
     },
+    imageOverlayTrack: {
+      enabled: imageTrack.enabled,
+      groupCount: imageTrack.groupCount,
+      groups: imageTrack.groups,
+    },
     playbackOverlays: compiledOverlays.playbackOverlays,
+    playbackImageOverlays: compiledOverlays.playbackImageOverlays,
   };
 }
 

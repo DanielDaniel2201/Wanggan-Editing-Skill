@@ -85,6 +85,21 @@ const DEFAULT_PROGRESSIVE_KEYWORDS = Object.freeze({
   }),
 });
 
+const DEFAULT_IMAGE_OVERLAY = Object.freeze({
+  enabled: true,
+  coordinate_space: "screen",
+  fit: "contain",
+  box: Object.freeze({
+    x: 0.58,
+    y: 0.08,
+    width: 0.34,
+    height: 0.28,
+    unit: "ratio",
+  }),
+});
+
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp"]);
+
 const ENTER_ANIMATIONS = Object.freeze(["none", "pop"]);
 
 function cloneDefaultCaptions() {
@@ -110,6 +125,13 @@ function cloneDefaultProgressiveKeywords() {
     ...DEFAULT_PROGRESSIVE_KEYWORDS,
     box: { ...DEFAULT_PROGRESSIVE_KEYWORDS.box },
     style: { ...DEFAULT_PROGRESSIVE_KEYWORDS.style },
+  };
+}
+
+function cloneDefaultImageOverlay() {
+  return {
+    ...DEFAULT_IMAGE_OVERLAY,
+    box: { ...DEFAULT_IMAGE_OVERLAY.box },
   };
 }
 
@@ -198,6 +220,25 @@ function normalizedDisplayText(value, fallback, label) {
 
 function normalizedSource(value) {
   return value === "human" ? "human" : "ai";
+}
+
+function normalizedImagePath(value, label, projectDir = null) {
+  const imagePath = String(value || "").trim();
+  if (!imagePath) throw new WangganError(`${label}不能为空`);
+  const extension = path.extname(imagePath).toLowerCase();
+  if (!IMAGE_EXTENSIONS.has(extension)) {
+    throw new WangganError("贴图只支持 PNG、JPG、JPEG、WebP 或 BMP", {
+      image_path: imagePath,
+      extension,
+    });
+  }
+  if (projectDir) {
+    const resolvedPath = path.resolve(projectDir, imagePath);
+    if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isFile()) {
+      throw new WangganError(`找不到贴图文件：${resolvedPath}`);
+    }
+  }
+  return imagePath;
 }
 
 function normalizedEnterAnimation(value, fallback) {
@@ -417,6 +458,56 @@ function validateProgressiveList(input, overlayIndex, words) {
   };
 }
 
+function validateImageOverlay(input, overlayIndex, words, projectDir = null) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new WangganError(`第 ${overlayIndex + 1} 个定时覆盖层必须是对象`);
+  }
+  if (!Array.isArray(words) || words.length === 0) {
+    throw new WangganError("校验贴图覆盖层时必须提供逐字稿");
+  }
+  const startWordIndex = Number(input.start_word_index);
+  const endWordIndex = Number(input.end_word_index);
+  if (
+    !Number.isInteger(startWordIndex)
+    || !Number.isInteger(endWordIndex)
+    || startWordIndex < 0
+    || endWordIndex < startWordIndex
+    || endWordIndex >= words.length
+  ) {
+    throw new WangganError("贴图覆盖层的逐字稿范围无效", {
+      overlayIndex,
+      start_word_index: input.start_word_index ?? null,
+      end_word_index: input.end_word_index ?? null,
+      wordCount: words.length,
+    });
+  }
+  const defaults = cloneDefaultImageOverlay();
+  const overlayId = String(input.id || `overlay-image-${String(overlayIndex + 1).padStart(3, "0")}`).trim();
+  if (!overlayId || /[\\/]/.test(overlayId)) {
+    throw new WangganError("贴图覆盖层 id 不能为空或包含路径分隔符", { overlayIndex, overlayId });
+  }
+  if (input.fit !== undefined && input.fit !== "contain") {
+    throw new WangganError("贴图适配方式只支持 contain", { fit: input.fit });
+  }
+  const selectedWords = words.slice(startWordIndex, endWordIndex + 1);
+  return {
+    id: overlayId,
+    type: "image",
+    enabled: input.enabled === undefined ? defaults.enabled : Boolean(input.enabled),
+    coordinate_space: "screen",
+    image_path: normalizedImagePath(input.image_path, "贴图路径", projectDir),
+    fit: "contain",
+    box: normalizedOverlayBox(input.box, defaults.box, "贴图区域"),
+    start_word_index: startWordIndex,
+    end_word_index: endWordIndex,
+    start: selectedWords[0].start,
+    end: selectedWords.at(-1).end,
+    source_text: selectedWords.map((word) => word.text).join(""),
+    source: normalizedSource(input.source),
+    human_modified: Boolean(input.human_modified),
+  };
+}
+
 export function validateOverlays(value, options = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new WangganError("overlays.json 必须是对象");
@@ -442,9 +533,12 @@ export function validateOverlays(value, options = {}) {
   if (!Array.isArray(timedInputs)) {
     throw new WangganError("timed_overlays 必须是数组");
   }
-  const timedOverlays = timedInputs.map((input, index) => (
-    validateProgressiveList(input, index, options.words)
-  ));
+  const timedOverlays = timedInputs.map((input, index) => {
+    if (input?.type === "image") {
+      return validateImageOverlay(input, index, options.words, options.projectDir || null);
+    }
+    return validateProgressiveList(input, index, options.words);
+  });
   const overlayIds = new Set();
   const enabledByStart = [];
   for (const overlay of timedOverlays) {
@@ -455,7 +549,7 @@ export function validateOverlays(value, options = {}) {
   enabledByStart.sort((left, right) => left.start - right.start);
   for (let index = 1; index < enabledByStart.length; index += 1) {
     if (enabledByStart[index].start < enabledByStart[index - 1].end) {
-      throw new WangganError("启用的清单时间不能重叠", {
+      throw new WangganError("启用的定时覆盖层时间不能重叠", {
         previous: enabledByStart[index - 1],
         current: enabledByStart[index],
       });
@@ -495,11 +589,11 @@ export function validateOverlays(value, options = {}) {
 
 export function loadOverlays(overlaysPath, words = null) {
   if (!fs.existsSync(overlaysPath)) return defaultOverlays();
-  return validateOverlays(readJson(overlaysPath), { words });
+  return validateOverlays(readJson(overlaysPath), { words, projectDir: path.dirname(overlaysPath) });
 }
 
 export function saveOverlays(overlaysPath, overlays, words = null) {
-  const normalized = validateOverlays(overlays, { words });
+  const normalized = validateOverlays(overlays, { words, projectDir: path.dirname(overlaysPath) });
   writeJson(overlaysPath, normalized);
   return normalized;
 }
@@ -656,9 +750,9 @@ function mergedTimeRanges(ranges) {
 }
 
 export function compileStructuredOverlayTrack(project, words, overlaysInput) {
-  const overlays = validateOverlays(overlaysInput, { words });
+  const overlays = validateOverlays(overlaysInput, { words, projectDir: project.projectDir || null });
   const minDimension = Math.min(project.displayWidth, project.displayHeight);
-  const groups = overlays.timed_overlays.map((overlay) => {
+  const groups = overlays.timed_overlays.filter((overlay) => overlay.type !== "image").map((overlay) => {
     const fontSize = Math.max(12, Math.round(minDimension * overlay.style.font_size_ratio));
     const strokeWidth = Math.max(1, Math.round(minDimension * overlay.style.stroke_width_ratio));
     const itemGap = Math.round(project.displayHeight * overlay.style.item_gap_ratio);
@@ -760,6 +854,30 @@ export function compileStructuredOverlayTrack(project, words, overlaysInput) {
     groups,
     states,
     suppressionRanges: mergedTimeRanges(suppressionRanges),
+  };
+}
+
+export function compileImageOverlayTrack(project, words, overlaysInput) {
+  const overlays = validateOverlays(overlaysInput, { words, projectDir: project.projectDir || null });
+  const groups = overlays.timed_overlays
+    .filter((overlay) => overlay.type === "image")
+    .map((overlay) => {
+      const resolvedImagePath = path.resolve(project.projectDir || process.cwd(), overlay.image_path);
+      const stat = fs.existsSync(resolvedImagePath)
+        ? fs.statSync(resolvedImagePath)
+        : { mtimeMs: 0, size: 0 };
+      return {
+        ...overlay,
+        resolved_image_path: resolvedImagePath,
+        asset_url: `/overlay-images/${encodeURIComponent(overlay.id)}?v=${Math.round(stat.mtimeMs)}-${stat.size}`,
+      };
+    });
+  const states = groups.filter((overlay) => overlay.enabled).map((overlay) => ({ ...overlay }));
+  return {
+    enabled: states.length > 0,
+    groupCount: groups.length,
+    groups,
+    states,
   };
 }
 
@@ -1106,7 +1224,7 @@ export function loadCaptionCues(project, words) {
 }
 
 export function compileCaptionTrack(project, words, overlaysInput, effects = [], options = {}) {
-  const overlays = validateOverlays(overlaysInput, { words });
+  const overlays = validateOverlays(overlaysInput, { words, projectDir: project.projectDir || null });
   const source = loadCaptionCues(project, words);
   const visibleCues = suppressCaptionCues(source.cues, words, options.suppressionRanges || []);
   const captionEffects = effects.filter((effect) => effect.target === EFFECT_TARGETS.CAPTIONS_OVERLAY);
@@ -1148,8 +1266,9 @@ export function compileCaptionTrack(project, words, overlaysInput, effects = [],
 }
 
 export function compileScreenOverlays(project, words, overlaysInput, effects = []) {
-  const overlays = validateOverlays(overlaysInput, { words });
+  const overlays = validateOverlays(overlaysInput, { words, projectDir: project.projectDir || null });
   const structuredTrack = compileStructuredOverlayTrack(project, words, overlays);
+  const imageTrack = compileImageOverlayTrack(project, words, overlays);
   const captionTrack = compileCaptionTrack(project, words, overlays, effects, {
     suppressionRanges: structuredTrack.suppressionRanges,
   });
@@ -1157,8 +1276,10 @@ export function compileScreenOverlays(project, words, overlaysInput, effects = [
     overlays,
     captionTrack,
     structuredTrack,
+    imageTrack,
     playbackCaptions: captionTrack.cues,
     playbackOverlays: structuredTrack.states,
+    playbackImageOverlays: imageTrack.states,
   };
 }
 

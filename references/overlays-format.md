@@ -6,6 +6,7 @@
 - `timed_overlays` 保存由逐字稿范围驱动的结构化覆盖层
 - `progressive_list` 用于按口播进度纵向累积显示清单
 - `progressive_keywords` 用于把开头 Hook 或正文中值得强调的内容压缩成一至四个 2–3 字块并依次展示
+- `image` 用于在连续逐字稿范围内把本地图片完整放入画面区块
 - 字幕局部“大字号、亮颜色”仍保存在 `effects.json` v3，通过 `target: overlay.captions` 引用普通字幕轨道
 
 ## 标准文件
@@ -101,6 +102,25 @@
       ],
       "source": "ai",
       "human_modified": false
+    },
+    {
+      "id": "overlay-image-001",
+      "type": "image",
+      "enabled": true,
+      "image_path": "D:\\素材\\产品截图.png",
+      "fit": "contain",
+      "coordinate_space": "screen",
+      "box": {
+        "x": 0.58,
+        "y": 0.08,
+        "width": 0.34,
+        "height": 0.28,
+        "unit": "ratio"
+      },
+      "start_word_index": 260,
+      "end_word_index": 282,
+      "source": "ai",
+      "human_modified": false
     }
   ]
 }
@@ -116,7 +136,7 @@
 - 清单条目必须按词序排列，同一清单内不能重叠
 - 单个清单最多支持 8 个条目
 - 单个关键词组最多支持 4 个条目
-- 启用的两个结构化文字组时间不能重叠
+- 启用的清单、关键词和图片定时覆盖层时间不能重叠
 
 ## 清单时间行为
 
@@ -152,6 +172,22 @@
 
 9. 人工拖动某个词组后整组变为 `layout: custom`，每个条目的独立 `box` 参与保存和校验
 
+## 图片贴图时间与布局行为
+
+1. 直接提交 `start_word_index`、`end_word_index` 和 `image_path`
+
+2. 第一个词开始时显示图片，最后一个词结束时立即消失
+
+3. 服务端重新计算 `start`、`end` 和 `source_text`，不接受手写秒数替代词索引
+
+4. `fit` 固定为 `contain`，横图、竖图和透明图都保持原始宽高比，完整放进 `box`，多余区域透明
+
+5. 支持 PNG、JPG、JPEG、WebP、BMP，图片路径必须指向本地存在的文件
+
+6. 图片位于画面缩放层上方、字幕和结构化文字下方，不参与字幕避让
+
+7. 审查页和最终 FFmpeg 都使用同一组 `box`、`start`、`end` 和 `contain` 规则
+
 ## 固定入场动画
 
 - `enter_animation: none` 直接出现
@@ -174,6 +210,7 @@
 - 清单中的 `x`、`y`、`width` 表示整组位置和可用宽度，编译后的 `height` 按当前字号、换行和间距自动贴合内容
 - 关键词自动布局由服务端生成每个条目的独立 `box`
 - 关键词人工拖动后保存每个条目的横向范围和中心位置，编译后的 `height` 按当前整组字号和文字行数自动贴合
+- 图片的 `x`、`y`、`width`、`height` 表示可用区块，图片按原始宽高比居中放入该区块
 - 普通字幕使用 `x` 和 `width` 表示最大横向区域，使用 `y + height` 表示字幕底部锚点
 - 普通字幕的可见高度由当前一行或两行文字自动计算，审查页不再把 `height` 画成固定高度区域
 - 保留字幕 `height` 字段是为了让已有 v1、v2 工程继续使用原来的底部位置
@@ -221,6 +258,9 @@
 - 条目框高度始终贴合文字，清单按条目重新排布，关键词保留各自中心位置
 - 点击视频中的字幕、关键词或清单后，可以只修改当前字幕块或当前结构化文字组的字体
 - 每个结构化文字组可以选择直接出现或轻微弹出
+- 选择连续逐字稿后可以新建贴图并粘贴本地图片路径
+- 视频中的图片支持整块拖动，右下角白色圆点支持同时修改区块宽高
+- 贴图支持定位逐字范围、替换范围、替换路径、启用、撤下和删除
 - 所有修改立即写入 `overlays.json` 并热重载
 
 ## 接口与命令
@@ -231,7 +271,8 @@ node scripts/wanggan.mjs import-overlays --project "<任务目录>" --input "<�
 
 - `PUT /api/overlays` 原子式替换并校验完整覆盖层文件
 - `PATCH /api/overlays/captions` 负责普通字幕开关、字幕区域和单条字幕字体
-- `GET /api/state` 返回 `structuredOverlayTrack`、`playbackOverlays` 和避让后的 `playbackCaptions`
+- `GET /api/state` 返回 `structuredOverlayTrack`、`playbackOverlays`、`imageOverlayTrack`、`playbackImageOverlays` 和避让后的 `playbackCaptions`
+- `GET /overlay-images/<id>` 只读取当前工程已经校验过的图片路径，审查页不能借此读取任意本地文件
 
 ## v1 工程迁移
 

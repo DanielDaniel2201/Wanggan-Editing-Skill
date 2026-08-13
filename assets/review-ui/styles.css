@@ -121,13 +121,57 @@ h3 { font-size: 15px; }
   cursor: pointer;
 }
 
+.image-overlay {
+  position: absolute;
+  display: none;
+  box-sizing: border-box;
+  z-index: 2;
+  border: 2px solid transparent;
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+}
+
+.image-overlay img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.image-overlay:focus-visible,
+.image-overlay--selected { border-color: #fff; }
+
+.image-overlay--dragging { cursor: grabbing; }
+
+.image-resize-handle {
+  position: absolute;
+  right: -8px;
+  bottom: -8px;
+  width: 15px;
+  height: 15px;
+  display: none;
+  box-sizing: border-box;
+  border: 2px solid #111;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.75);
+  cursor: nwse-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.image-overlay--selected .image-resize-handle { display: block; }
+
 .subtitle-overlay {
   position: absolute;
   display: none;
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  z-index: 2;
+  z-index: 3;
   color: #fff;
   font-weight: 700;
   line-height: 1.25;
@@ -180,7 +224,7 @@ h3 { font-size: 15px; }
   align-items: flex-start;
   justify-content: flex-start;
   box-sizing: border-box;
-  z-index: 2;
+  z-index: 3;
   color: #fff;
   font-weight: 800;
   line-height: 1.25;
@@ -279,7 +323,7 @@ h3 { font-size: 15px; }
   background: rgba(0, 0, 0, 0.72);
   font-size: 12px;
   font-weight: 700;
-  z-index: 3;
+  z-index: 4;
   pointer-events: none;
 }
 

@@ -20,7 +20,7 @@ import {
   saveOverlays,
 } from "./lib/captions.mjs";
 
-export const RENDER_ENGINE_VERSION = 17;
+export const RENDER_ENGINE_VERSION = 18;
 
 const uiRoot = fileURLToPath(new URL("../assets/review-ui/", import.meta.url));
 const contentTypes = {
@@ -28,6 +28,11 @@ const contentTypes = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
 };
 
 function sendJson(response, statusCode, value) {
@@ -107,6 +112,16 @@ function serveMedia(request, response, mediaPath) {
     "Content-Length": end - start + 1,
   });
   fs.createReadStream(mediaPath, { start, end }).pipe(response);
+}
+
+function serveOverlayImage(response, imagePath) {
+  const body = fs.readFileSync(imagePath);
+  response.writeHead(200, {
+    "Content-Type": contentTypes[path.extname(imagePath).toLowerCase()] || "application/octet-stream",
+    "Content-Length": body.length,
+    "Cache-Control": "no-store",
+  });
+  response.end(body);
 }
 
 function replaceEffects(project, inputs, defaultSource = "ai") {
@@ -246,11 +261,23 @@ export function startServer(projectInput, port = 8911) {
         serveMedia(request, response, project.previewVideoPath);
         return;
       }
+      const overlayImageMatch = /^\/overlay-images\/([^/]+)$/.exec(pathname);
+      if (request.method === "GET" && overlayImageMatch) {
+        const state = projectState(project);
+        const overlays = loadOverlays(project.overlaysPath, state.words);
+        const compiled = compileScreenOverlays(project, state.words, overlays, state.effects);
+        const imageOverlay = compiled.imageTrack.groups.find((candidate) => (
+          candidate.id === overlayImageMatch[1]
+        ));
+        if (!imageOverlay) throw new WangganError("找不到贴图素材", { id: overlayImageMatch[1] }, 404);
+        serveOverlayImage(response, imageOverlay.resolved_image_path);
+        return;
+      }
       if (request.method === "GET" && pathname === "/api/state") {
         const state = projectState(project);
         const overlays = loadOverlays(project.overlaysPath, state.words);
         const compiledOverlays = compileScreenOverlays(project, state.words, overlays, state.effects);
-        const { captionTrack, structuredTrack } = compiledOverlays;
+        const { captionTrack, structuredTrack, imageTrack } = compiledOverlays;
         sendJson(response, 200, {
           ...state,
           overlays,
@@ -271,8 +298,14 @@ export function startServer(projectInput, port = 8911) {
             groups: structuredTrack.groups,
             suppressionRanges: structuredTrack.suppressionRanges,
           },
+          imageOverlayTrack: {
+            enabled: imageTrack.enabled,
+            groupCount: imageTrack.groupCount,
+            groups: imageTrack.groups,
+          },
           playbackCaptions: compiledOverlays.playbackCaptions,
           playbackOverlays: compiledOverlays.playbackOverlays,
+          playbackImageOverlays: compiledOverlays.playbackImageOverlays,
           playbackEffects: compilePlaybackEffects(state.effects),
           renderEngineVersion: RENDER_ENGINE_VERSION,
         });

@@ -253,6 +253,58 @@ const captionFilter = buildFilter({ displayWidth: 720, displayHeight: 1280 }, ef
 });
 assert.match(captionFilter, /\[base\];\[base\]ass=filename='render-overlays\.ass'\[v\]/);
 
+const imageOverlays = validateOverlays({
+  ...normalizedOverlays,
+  timed_overlays: [{
+    id: "overlay-image-test",
+    type: "image",
+    image_path: "poster-wide.png",
+    box: { x: 0.55, y: 0.08, width: 0.38, height: 0.22 },
+    start_word_index: 0,
+    end_word_index: 1,
+    source: "ai",
+  }],
+}, { words });
+const imageOverlay = imageOverlays.timed_overlays[0];
+assert.equal(imageOverlay.type, "image");
+assert.equal(imageOverlay.fit, "contain");
+assert.equal(imageOverlay.start, 0.1);
+assert.equal(imageOverlay.end, 0.3);
+assert.equal(imageOverlay.source_text, "这是");
+assert.deepEqual(imageOverlay.box, {
+  x: 0.55,
+  y: 0.08,
+  width: 0.38,
+  height: 0.22,
+  unit: "ratio",
+});
+const compiledImageScreen = compileScreenOverlays(captionProject, words, imageOverlays, captionEffects);
+assert.equal(compiledImageScreen.structuredTrack.groupCount, 0);
+assert.equal(compiledImageScreen.imageTrack.groupCount, 1);
+assert.equal(compiledImageScreen.playbackImageOverlays.length, 1);
+assert.equal(compiledImageScreen.playbackCaptions.length, captionTrack.cues.length);
+assert.match(compiledImageScreen.playbackImageOverlays[0].asset_url, /overlay-images\/overlay-image-test/);
+const imageFilter = buildFilter({ displayWidth: 720, displayHeight: 1280 }, effects, {
+  imageOverlays: [{ ...imageOverlay, input_index: 1 }],
+  overlayAssFile: "render-overlays.ass",
+});
+assert.match(imageFilter, /\[1:v\]scale=w=274:h=282:force_original_aspect_ratio=decrease/);
+assert.match(imageFilter, /enable='gte\(t,0\.1\)\*lt\(t,0\.3\)'/);
+assert.match(imageFilter, /\(274-overlay_w\)\/2/);
+assert.match(imageFilter, /\[base1\]ass=filename='render-overlays\.ass'\[v\]/);
+assert.throws(
+  () => validateOverlays({
+    ...normalizedOverlays,
+    timed_overlays: [{
+      type: "image",
+      image_path: "unsupported.svg",
+      start_word_index: 0,
+      end_word_index: 1,
+    }],
+  }, { words }),
+  /只支持 PNG、JPG、JPEG、WebP 或 BMP/,
+);
+
 const progressiveOverlays = validateOverlays({
   ...normalizedOverlays,
   timed_overlays: [{

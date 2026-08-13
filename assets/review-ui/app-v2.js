@@ -4,6 +4,9 @@ const elements = {
   videoFrame: document.querySelector("#videoFrame"),
   videoStage: document.querySelector("#videoStage"),
   previewCanvas: document.querySelector("#previewCanvas"),
+  imageOverlay: document.querySelector("#imageOverlay"),
+  imageOverlayContent: document.querySelector("#imageOverlayContent"),
+  imageResizeHandle: document.querySelector("#imageResizeHandle"),
   structuredOverlay: document.querySelector("#structuredOverlay"),
   structuredList: document.querySelector("#structuredList"),
   subtitleOverlay: document.querySelector("#subtitleOverlay"),
@@ -26,6 +29,7 @@ const elements = {
   structuredEditor: document.querySelector("#structuredEditor"),
   newListButton: document.querySelector("#newListButton"),
   newKeywordsButton: document.querySelector("#newKeywordsButton"),
+  newImageButton: document.querySelector("#newImageButton"),
   saveProjectButton: document.querySelector("#saveProjectButton"),
   renderButton: document.querySelector("#renderButton"),
 };
@@ -36,8 +40,9 @@ let state = null;
 let playbackEffects = [];
 let playbackCaptions = [];
 let playbackOverlays = [];
+let playbackImageOverlays = [];
 let renderEngineCompatible = false;
-const requiredRenderEngineVersion = 17;
+const requiredRenderEngineVersion = 18;
 const selectedWords = new Set();
 let dragging = false;
 let paintShouldSelect = true;
@@ -56,6 +61,8 @@ let captionInteraction = null;
 let structuredBoxSelected = false;
 let structuredSelectedItemId = null;
 let structuredInteraction = null;
+let imageBoxSelected = false;
+let imageInteraction = null;
 let selectedTextTarget = null;
 
 async function requestJson(url, options = {}) {
@@ -153,6 +160,12 @@ function structuredItemForWord(wordIndex) {
   return null;
 }
 
+function imageOverlayForWord(wordIndex) {
+  return state?.imageOverlayTrack?.groups?.find((overlay) => (
+    wordIndex >= overlay.start_word_index && wordIndex <= overlay.end_word_index
+  )) || null;
+}
+
 function selectionHasEffect(range, target, effectType) {
   if (!range?.contiguous) return false;
   for (let wordIndex = range.start; wordIndex <= range.end; wordIndex += 1) {
@@ -216,17 +229,19 @@ function renderTranscriptClasses() {
     const videoEffect = effectForWord(wordIndex, "video.main");
     const captionEffect = effectForWord(wordIndex, "overlay.captions");
     const structuredItem = structuredItemForWord(wordIndex);
+    const imageOverlay = imageOverlayForWord(wordIndex);
     button.classList.toggle("word--in", Boolean(videoEffect?.effect_type.endsWith("emphasis")));
     button.classList.toggle("word--out", Boolean(videoEffect?.effect_type.endsWith("negative")));
     button.classList.toggle("word--long", Boolean(videoEffect?.effect_type.startsWith("long_")));
     button.classList.toggle("word--caption", Boolean(captionEffect));
-    button.classList.toggle("word--structured", Boolean(structuredItem));
+    button.classList.toggle("word--structured", Boolean(structuredItem || imageOverlay));
     button.classList.toggle("word--selected", selectedWords.has(wordIndex));
     button.classList.toggle("word--current", wordIndex === currentWordIndex);
     button.title = [
       videoEffect?.effect_type,
       captionEffect?.effect_type,
       structuredItem?.group?.type,
+      imageOverlay?.type,
     ].filter(Boolean).join(" + ");
   }
 }
@@ -243,6 +258,7 @@ function renderControls() {
   }
   elements.newListButton.disabled = !range?.contiguous || savingOverlays;
   elements.newKeywordsButton.disabled = !range?.contiguous || savingOverlays;
+  elements.newImageButton.disabled = !range?.contiguous || savingOverlays;
   renderFontControls();
 }
 
@@ -292,7 +308,9 @@ function selectCaptionText(caption) {
   selectedTextTarget = { kind: "caption", cueId };
   structuredBoxSelected = false;
   structuredSelectedItemId = null;
+  imageBoxSelected = false;
   renderStructuredSelection();
+  renderImageSelection();
   renderFontControls();
 }
 
@@ -300,7 +318,9 @@ function selectStructuredText(groupId) {
   if (!groupId) return;
   selectedTextTarget = { kind: "overlay", groupId };
   captionBoxSelected = false;
+  imageBoxSelected = false;
   renderCaptionSelection();
+  renderImageSelection();
   renderFontControls();
 }
 
@@ -412,26 +432,47 @@ function overlayGroupInput(group, overrides = {}) {
   };
 }
 
+function imageOverlayInput(overlay, overrides = {}) {
+  return {
+    id: overlay.id,
+    type: "image",
+    enabled: overlay.enabled,
+    coordinate_space: "screen",
+    image_path: overlay.image_path,
+    fit: "contain",
+    box: { ...overlay.box },
+    start_word_index: overlay.start_word_index,
+    end_word_index: overlay.end_word_index,
+    source: overlay.source,
+    human_modified: overlay.human_modified,
+    ...overrides,
+  };
+}
+
 function currentOverlayGroups() {
   return (state?.structuredOverlayTrack?.groups || []).map((group) => overlayGroupInput(group));
 }
 
-async function saveOverlayGroups(groups, successMessage) {
+function currentImageOverlayInputs() {
+  return (state?.imageOverlayTrack?.groups || []).map((overlay) => imageOverlayInput(overlay));
+}
+
+async function saveTimedOverlays(timedOverlays, successMessage) {
   if (!renderEngineCompatible || savingOverlays) return;
   try {
     savingOverlays = true;
     renderControls();
-    setSaveStatus("正在保存结构化文字");
+    setSaveStatus("正在保存覆盖层");
     await requestJson("/api/overlays", {
       method: "PUT",
       body: JSON.stringify({
         version: 2,
         captions: state.overlays.captions,
-        timed_overlays: groups,
+        timed_overlays: timedOverlays,
       }),
     });
     await loadState();
-    setSaveStatus(successMessage || "结构化文字已保存并热重载");
+    setSaveStatus(successMessage || "覆盖层已保存并热重载");
   } catch (error) {
     setSaveStatus(`${error.message}${error.details ? `　${JSON.stringify(error.details)}` : ""}`, true);
   } finally {
@@ -439,6 +480,14 @@ async function saveOverlayGroups(groups, successMessage) {
     renderControls();
     renderStructuredEditor();
   }
+}
+
+async function saveOverlayGroups(groups, successMessage) {
+  return saveTimedOverlays([...groups, ...currentImageOverlayInputs()], successMessage);
+}
+
+function saveImageOverlays(images, successMessage) {
+  return saveTimedOverlays([...currentOverlayGroups(), ...images], successMessage);
 }
 
 function createStructuredGroupFromSelection(type) {
@@ -480,6 +529,30 @@ function createListFromSelection() {
 
 function createKeywordsFromSelection() {
   createStructuredGroupFromSelection("progressive_keywords");
+}
+
+function createImageFromSelection() {
+  const range = selectionInfo();
+  if (!range?.contiguous) {
+    setSaveStatus("请先选择一段连续逐字稿", true);
+    return;
+  }
+  const imagePath = window.prompt("请输入本地图片的完整路径，支持 PNG、JPG、JPEG、WebP、BMP");
+  if (!imagePath?.trim()) return;
+  const images = currentImageOverlayInputs();
+  images.push({
+    id: `overlay-image-${Date.now()}`,
+    type: "image",
+    enabled: true,
+    image_path: imagePath.trim(),
+    fit: "contain",
+    box: { x: 0.58, y: 0.08, width: 0.34, height: 0.28, unit: "ratio" },
+    start_word_index: range.start,
+    end_word_index: range.end,
+    source: "human",
+    human_modified: false,
+  });
+  void saveImageOverlays(images, "新贴图已创建");
 }
 
 function compactButton(label, className, action) {
@@ -527,13 +600,20 @@ function updatedGroup(groups, groupId, updater) {
     : group);
 }
 
+function updatedImageOverlays(images, overlayId, updater) {
+  return images.map((overlay) => overlay.id === overlayId
+    ? updater({ ...overlay, box: { ...overlay.box } })
+    : overlay);
+}
+
 function renderStructuredEditor() {
   elements.structuredEditor.replaceChildren();
   const groups = state?.structuredOverlayTrack?.groups || [];
-  if (!groups.length) {
+  const imageGroups = state?.imageOverlayTrack?.groups || [];
+  if (!groups.length && !imageGroups.length) {
     const empty = document.createElement("p");
     empty.className = "structured-editor__empty";
-    empty.textContent = "当前没有结构化文字，选择连续文字后新建清单或关键词";
+    empty.textContent = "当前没有覆盖层，选择连续文字后新建清单、关键词或贴图";
     elements.structuredEditor.append(empty);
     return;
   }
@@ -693,6 +773,74 @@ function renderStructuredEditor() {
     section.append(appendButton);
     elements.structuredEditor.append(section);
   });
+
+  imageGroups.forEach((overlay, imageIndex) => {
+    const section = document.createElement("section");
+    section.className = "structured-group";
+    const heading = document.createElement("div");
+    heading.className = "structured-group__heading";
+    const title = document.createElement("span");
+    title.className = "structured-group__title";
+    title.textContent = `贴图 ${imageIndex + 1}`;
+    const headingActions = document.createElement("div");
+    headingActions.className = "structured-group__actions";
+    headingActions.append(
+      compactButton(overlay.enabled ? "撤下" : "启用", "", () => {
+        const next = updatedImageOverlays(currentImageOverlayInputs(), overlay.id, (candidate) => ({
+          ...candidate,
+          enabled: !candidate.enabled,
+          human_modified: true,
+        }));
+        void saveImageOverlays(next, overlay.enabled ? "贴图已撤下" : "贴图已启用");
+      }),
+      compactButton("删除", "compact-button--danger", () => {
+        if (!window.confirm("确认删除这张贴图吗")) return;
+        void saveImageOverlays(
+          currentImageOverlayInputs().filter((candidate) => candidate.id !== overlay.id),
+          "贴图已删除",
+        );
+      }),
+    );
+    heading.append(title, headingActions);
+    section.append(heading);
+
+    const row = document.createElement("div");
+    row.className = "structured-item-editor";
+    row.append(compactButton("定位", "compact-button--index", () => {
+      selectStructuredItem(overlay);
+    }));
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = overlay.image_path;
+    input.setAttribute("aria-label", `贴图 ${imageIndex + 1} 本地路径`);
+    input.dataset.structuredAction = "";
+    input.addEventListener("change", () => {
+      if (!input.value.trim() || input.value.trim() === overlay.image_path) return;
+      const next = updatedImageOverlays(currentImageOverlayInputs(), overlay.id, (candidate) => ({
+        ...candidate,
+        image_path: input.value.trim(),
+        human_modified: true,
+      }));
+      void saveImageOverlays(next, "贴图路径已保存");
+    });
+    row.append(input);
+    row.append(compactButton("替换范围", "", () => {
+      const range = selectionInfo();
+      if (!range?.contiguous) {
+        setSaveStatus("请先选择一段连续逐字稿", true);
+        return;
+      }
+      const next = updatedImageOverlays(currentImageOverlayInputs(), overlay.id, (candidate) => ({
+        ...candidate,
+        start_word_index: range.start,
+        end_word_index: range.end,
+        human_modified: true,
+      }));
+      void saveImageOverlays(next, "贴图出现范围已替换");
+    }));
+    section.append(row);
+    elements.structuredEditor.append(section);
+  });
 }
 
 function renderRenderStatus() {
@@ -729,11 +877,14 @@ async function loadState(options = {}) {
       && Array.isArray(state.playbackEffects)
       && Array.isArray(state.playbackCaptions)
       && Array.isArray(state.playbackOverlays)
+      && Array.isArray(state.playbackImageOverlays)
       && Boolean(state.captionTrack)
-      && Boolean(state.structuredOverlayTrack);
+      && Boolean(state.structuredOverlayTrack)
+      && Boolean(state.imageOverlayTrack);
     playbackEffects = renderEngineCompatible ? state.playbackEffects : state.effects;
     playbackCaptions = renderEngineCompatible ? state.playbackCaptions : [];
     playbackOverlays = renderEngineCompatible ? state.playbackOverlays : [];
+    playbackImageOverlays = renderEngineCompatible ? state.playbackImageOverlays : [];
     elements.structuredOverlay.dataset.activeState = "";
     if (firstLoad) {
       selectedWords.clear();
@@ -1002,6 +1153,108 @@ function finishCaptionInteraction(event, cancelled = false) {
     }
   }
   renderCaptionSelection();
+  resumeCaptionPlayback(interaction);
+}
+
+function imageOverlayById(overlayId) {
+  return state?.imageOverlayTrack?.groups?.find((overlay) => overlay.id === overlayId) || null;
+}
+
+function setImageBoxInState(overlayId, box) {
+  const normalized = normalizedCaptionBox(box);
+  const update = (overlay) => {
+    if (overlay?.id === overlayId) overlay.box = { ...normalized };
+  };
+  for (const overlay of state?.imageOverlayTrack?.groups || []) update(overlay);
+  for (const overlay of state?.overlays?.timed_overlays || []) update(overlay);
+  for (const overlay of playbackImageOverlays) update(overlay);
+  return normalized;
+}
+
+function renderImageSelection() {
+  elements.imageOverlay.classList.toggle("image-overlay--selected", imageBoxSelected);
+  elements.imageOverlay.classList.toggle("image-overlay--dragging", Boolean(imageInteraction));
+  elements.imageOverlay.setAttribute("aria-pressed", String(imageBoxSelected));
+}
+
+function saveImageBox(overlayId, box) {
+  const next = updatedImageOverlays(currentImageOverlayInputs(), overlayId, (candidate) => ({
+    ...candidate,
+    box: { ...box },
+    human_modified: true,
+  }));
+  void saveImageOverlays(next, "贴图位置和尺寸已保存并热重载");
+}
+
+function beginImageInteraction(event) {
+  const active = currentImageOverlayAt(elements.video.currentTime || 0);
+  const overlay = active ? imageOverlayById(active.id) : null;
+  if (event.button !== 0 || !overlay?.enabled || savingOverlays) return;
+  const stageRect = elements.videoStage.getBoundingClientRect();
+  if (!stageRect.width || !stageRect.height) return;
+  event.preventDefault();
+  event.stopPropagation();
+  imageBoxSelected = true;
+  captionBoxSelected = false;
+  structuredBoxSelected = false;
+  structuredSelectedItemId = null;
+  clearSelectedTextTarget();
+  const startBox = normalizedCaptionBox(overlay.box);
+  imageInteraction = {
+    pointerId: event.pointerId,
+    overlayId: overlay.id,
+    mode: event.target.closest(".image-resize-handle") ? "resize" : "move",
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    stageRect,
+    startBox,
+    currentBox: startBox,
+    moved: false,
+    wasPlaying: !elements.video.paused,
+  };
+  elements.video.pause();
+  elements.imageOverlay.setPointerCapture?.(event.pointerId);
+  renderCaptionSelection();
+  renderStructuredSelection();
+  renderImageSelection();
+}
+
+function updateImageInteraction(event) {
+  const interaction = imageInteraction;
+  if (!interaction || event.pointerId !== interaction.pointerId) return;
+  event.preventDefault();
+  const deltaX = (event.clientX - interaction.startClientX) / interaction.stageRect.width;
+  const deltaY = (event.clientY - interaction.startClientY) / interaction.stageRect.height;
+  const start = interaction.startBox;
+  const next = interaction.mode === "resize"
+    ? {
+      ...start,
+      width: clamp(start.width + deltaX, 0.05, 1 - start.x),
+      height: clamp(start.height + deltaY, 0.05, 1 - start.y),
+    }
+    : {
+      ...start,
+      x: clamp(start.x + deltaX, 0, 1 - start.width),
+      y: clamp(start.y + deltaY, 0, 1 - start.height),
+    };
+  interaction.currentBox = setImageBoxInState(interaction.overlayId, next);
+  interaction.moved = !captionBoxesEqual(interaction.startBox, interaction.currentBox);
+}
+
+function finishImageInteraction(event, cancelled = false) {
+  const interaction = imageInteraction;
+  if (!interaction || (event && event.pointerId !== interaction.pointerId)) return;
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  imageInteraction = null;
+  if (elements.imageOverlay.hasPointerCapture?.(interaction.pointerId)) {
+    elements.imageOverlay.releasePointerCapture(interaction.pointerId);
+  }
+  if (cancelled) setImageBoxInState(interaction.overlayId, interaction.startBox);
+  else if (interaction.moved) saveImageBox(interaction.overlayId, interaction.currentBox);
+  renderImageSelection();
   resumeCaptionPlayback(interaction);
 }
 
@@ -1463,6 +1716,10 @@ function currentStructuredOverlayAt(time) {
   return playbackOverlays.find((overlay) => time >= overlay.start && time < overlay.end) || null;
 }
 
+function currentImageOverlayAt(time) {
+  return playbackImageOverlays.find((overlay) => time >= overlay.start && time < overlay.end) || null;
+}
+
 function drawPreviewFrame(percent) {
   if (!previewContext || elements.video.readyState < 2) return;
   const canvasWidth = elements.previewCanvas.width;
@@ -1529,6 +1786,31 @@ function renderSubtitleOverlay(caption) {
   });
   overlay.dataset.activeCaption = caption.text;
   renderCaptionSelection();
+}
+
+function renderImageOverlay(active) {
+  const overlay = elements.imageOverlay;
+  if (!active) {
+    overlay.style.display = "none";
+    overlay.dataset.overlayId = "";
+    overlay.dataset.assetUrl = "";
+    imageBoxSelected = false;
+    renderImageSelection();
+    return;
+  }
+  const { box } = active;
+  overlay.style.display = "block";
+  overlay.style.left = `${box.x * 100}%`;
+  overlay.style.top = `${box.y * 100}%`;
+  overlay.style.width = `${box.width * 100}%`;
+  overlay.style.height = `${box.height * 100}%`;
+  if (overlay.dataset.assetUrl !== active.asset_url) {
+    elements.imageOverlayContent.src = active.asset_url;
+    elements.imageOverlayContent.alt = `贴图 ${active.source_text || ""}`.trim();
+  }
+  overlay.dataset.overlayId = active.id;
+  overlay.dataset.assetUrl = active.asset_url;
+  renderImageSelection();
 }
 
 function applyStructuredEntryAnimation(active, time) {
@@ -1609,6 +1891,7 @@ function animationTick() {
     const effect = currentEffectAt(time);
     const percent = scalePercentAtTime(effect, time);
     drawPreviewFrame(percent);
+    renderImageOverlay(currentImageOverlayAt(time));
     renderStructuredOverlay(currentStructuredOverlayAt(time), time);
     renderSubtitleOverlay(currentCaptionAt(time));
     elements.activeEffectBadge.textContent = effect
@@ -1653,6 +1936,21 @@ elements.subtitleOverlay.addEventListener("keydown", (event) => {
     renderCaptionSelection();
   }
 });
+elements.imageOverlay.addEventListener("pointerdown", beginImageInteraction);
+elements.imageOverlay.addEventListener("pointermove", updateImageInteraction);
+elements.imageOverlay.addEventListener("pointerup", (event) => finishImageInteraction(event));
+elements.imageOverlay.addEventListener("pointercancel", (event) => finishImageInteraction(event, true));
+elements.imageOverlay.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    imageBoxSelected = true;
+    clearSelectedTextTarget();
+    renderImageSelection();
+  } else if (event.key === "Escape") {
+    imageBoxSelected = false;
+    renderImageSelection();
+  }
+});
 elements.structuredOverlay.addEventListener("pointerdown", beginStructuredInteraction);
 elements.structuredOverlay.addEventListener("pointermove", updateStructuredInteraction);
 elements.structuredOverlay.addEventListener("pointerup", (event) => finishStructuredInteraction(event));
@@ -1684,6 +1982,10 @@ document.addEventListener("pointerdown", (event) => {
     clearSelectedTextTarget("overlay");
     renderStructuredSelection();
   }
+  if (!elements.imageOverlay.contains(event.target)) {
+    imageBoxSelected = false;
+    renderImageSelection();
+  }
   const clickedWord = event.target.closest?.(".word");
   const clickedEffectAction = event.target.closest?.(
     "[data-selection-effect], [data-direct-effect], [data-structured-action], [data-text-style-action]",
@@ -1698,6 +2000,7 @@ document.addEventListener("pointerdown", (event) => {
 elements.playPauseButton.addEventListener("click", togglePlayback);
 elements.newListButton.addEventListener("click", createListFromSelection);
 elements.newKeywordsButton.addEventListener("click", createKeywordsFromSelection);
+elements.newImageButton.addEventListener("click", createImageFromSelection);
 elements.previewCanvas.addEventListener("click", togglePlayback);
 elements.seekSlider.addEventListener("pointerdown", () => { seeking = true; });
 elements.seekSlider.addEventListener("input", () => {

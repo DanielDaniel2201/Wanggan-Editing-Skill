@@ -58,6 +58,27 @@ function subtitleColorPixels(videoPath, time) {
   return { white, yellow };
 }
 
+function redPixels(videoPath, time) {
+  const result = run("ffmpeg", [
+    "-v", "error",
+    "-ss", String(time),
+    "-i", videoPath,
+    "-frames:v", "1",
+    "-vf", "format=rgb24",
+    "-f", "rawvideo",
+    "pipe:1",
+  ], { encoding: null });
+  let count = 0;
+  for (let index = 0; index < result.stdout.length; index += 3) {
+    if (
+      result.stdout[index] >= 180
+      && result.stdout[index + 1] <= 90
+      && result.stdout[index + 2] <= 90
+    ) count += 1;
+  }
+  return count;
+}
+
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "wanggan-caption-render-"));
 let passed = false;
 try {
@@ -68,6 +89,7 @@ try {
   const overlaysPath = path.join(tempDir, "overlays.json");
   const renderStatusPath = path.join(tempDir, "render-status.json");
   const outputPath = path.join(tempDir, "output.mp4");
+  const imagePath = path.join(tempDir, "wide-overlay.png");
 
   run("ffmpeg", [
     "-y", "-v", "error",
@@ -77,6 +99,13 @@ try {
     "-pix_fmt", "yuv420p",
     "-movflags", "+faststart",
     videoPath,
+  ]);
+  run("ffmpeg", [
+    "-y", "-v", "error",
+    "-f", "lavfi",
+    "-i", "color=c=red:s=1000x100:d=0.04",
+    "-frames:v", "1",
+    imagePath,
   ]);
   const transcriptWords = [
     { text: "普", start: 0.5, end: 0.7 },
@@ -97,25 +126,36 @@ try {
   const overlays = defaultOverlays();
   overlays.captions.enabled = true;
   overlays.captions.cue_fonts = { "caption-001": "华文中宋" };
-  overlays.timed_overlays = [{
-    id: "overlay-keywords-render",
-    type: "progressive_keywords",
-    layout: "auto",
-    enter_animation: "pop",
-    items: [
-      {
-        start_word_index: 0,
-        end_word_index: 1,
-        display_text: "普通人",
-      },
-      {
-        start_word_index: 2,
-        end_word_index: 3,
-        display_text: "做字幕",
-      },
-    ],
-    source: "ai",
-  }];
+  overlays.timed_overlays = [
+    {
+      id: "overlay-keywords-render",
+      type: "progressive_keywords",
+      layout: "auto",
+      enter_animation: "pop",
+      items: [
+        {
+          start_word_index: 0,
+          end_word_index: 1,
+          display_text: "普通人",
+        },
+        {
+          start_word_index: 2,
+          end_word_index: 3,
+          display_text: "做字幕",
+        },
+      ],
+      source: "ai",
+    },
+    {
+      id: "overlay-image-render",
+      type: "image",
+      image_path: imagePath,
+      box: { x: 0.58, y: 0.08, width: 0.34, height: 0.28 },
+      start_word_index: 4,
+      end_word_index: 5,
+      source: "ai",
+    },
+  ];
   saveOverlays(overlaysPath, overlays, transcriptWords);
   writeJson(renderStatusPath, { state: "idle" });
 
@@ -139,6 +179,8 @@ try {
   assert.equal(result.captions.cueCount, 1);
   assert.equal(result.structuredOverlays.enabled, true);
   assert.equal(result.structuredOverlays.groupCount, 1);
+  assert.equal(result.imageOverlays.enabled, true);
+  assert.equal(result.imageOverlays.count, 1);
   const assPath = path.join(tempDir, "render-overlays.ass");
   assert.ok(fs.existsSync(assPath));
   const ass = fs.readFileSync(assPath, "utf8");
@@ -157,7 +199,10 @@ try {
   assert.match(ass, /\\fad\(/);
   assert.match(ass, /\\fscx85\\fscy85/);
   assert.doesNotMatch(ass, /Dialogue: 0[^\n]*普通/);
-  assert.match(fs.readFileSync(path.join(tempDir, "render-filter.txt"), "utf8"), /ass=filename='render-overlays\.ass'/);
+  const renderFilter = fs.readFileSync(path.join(tempDir, "render-filter.txt"), "utf8");
+  assert.match(renderFilter, /force_original_aspect_ratio=decrease/);
+  assert.match(renderFilter, /enable='gte\(t,1\.5\)\*lt\(t,1\.9\)'/);
+  assert.match(renderFilter, /ass=filename='render-overlays\.ass'/);
 
   const before = brightPixels(outputPath, 0.2);
   const duringKeywords = brightPixels(outputPath, 0.7);
@@ -166,8 +211,14 @@ try {
   assert.ok(during > before + 20, `字幕期间亮像素没有显著增加 before=${before} during=${during}`);
   const keywordColors = subtitleColorPixels(outputPath, 0.7);
   const captionColors = subtitleColorPixels(outputPath, 1.7);
+  const beforeImageRed = redPixels(outputPath, 1.3);
+  const duringImageRed = redPixels(outputPath, 1.7);
   assert.ok(keywordColors.yellow > 20, `关键词没有保留接近 #FFF08A 的亮黄色像素 yellow=${keywordColors.yellow}`);
   assert.ok(captionColors.white > 20, `字幕没有保留接近 #FFFFFF 的白色像素 white=${captionColors.white}`);
+  assert.ok(
+    duringImageRed > beforeImageRed + 200,
+    `贴图出现期间红色像素没有显著增加 before=${beforeImageRed} during=${duringImageRed}`,
+  );
   passed = true;
   process.stdout.write(`wanggan subtitle render passed before=${before} during=${during}\n`);
 } finally {
