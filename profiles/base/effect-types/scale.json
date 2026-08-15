@@ -24,7 +24,7 @@
     "presets": [
       {
         "id": "emphasis-step",
-        "label": "短促重点",
+        "label": "瞬间放大",
         "className": "scale-button--in",
         "config": {
           "from_scale": 1,
@@ -35,7 +35,7 @@
       },
       {
         "id": "negative-step",
-        "label": "短促负面",
+        "label": "瞬间缩小",
         "className": "scale-button--out",
         "config": {
           "from_scale": 1,
@@ -46,7 +46,7 @@
       },
       {
         "id": "emphasis-linear",
-        "label": "长重点",
+        "label": "过渡放大",
         "className": "scale-button--in scale-button--long",
         "config": {
           "from_scale": 1,
@@ -57,7 +57,7 @@
       },
       {
         "id": "negative-linear",
-        "label": "长负面",
+        "label": "过渡缩小",
         "className": "scale-button--out scale-button--long",
         "config": {
           "from_scale": 1,

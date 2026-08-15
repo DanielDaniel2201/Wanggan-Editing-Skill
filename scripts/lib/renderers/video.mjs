@@ -59,8 +59,8 @@ export const videoRenderer = {
         motion: state.interpolation === "linear" ? "progressive" : "cut",
         direction: state.to_scale >= 1 ? "in" : "out",
         effect_label: state.to_scale >= 1
-          ? (state.interpolation === "linear" ? "长重点" : "缩近 Zoom in")
-          : (state.interpolation === "linear" ? "长负面" : "短促负面"),
+          ? (state.interpolation === "linear" ? "过渡放大" : "瞬间放大")
+          : (state.interpolation === "linear" ? "过渡缩小" : "瞬间缩小"),
         from_scale: state.from_scale,
         to_scale: state.to_scale,
         interpolation: state.interpolation,

@@ -14,6 +14,7 @@ const elements = {
   subtitleResizeHandle: document.querySelector("#subtitleResizeHandle"),
   transcript: document.querySelector("#transcript"),
   effectButtons: document.querySelector("#effectButtons"),
+  effectTargetBadge: document.querySelector("#effectTargetBadge"),
   assetCreateButtons: document.querySelector("#assetCreateButtons"),
   saveStatus: document.querySelector("#saveStatus"),
   connectionStatus: document.querySelector("#connectionStatus"),
@@ -61,6 +62,7 @@ let structuredInteraction = null;
 let imageBoxSelected = false;
 let imageInteraction = null;
 let selectedTextTarget = null;
+let selectedEffectTargetId = null;
 
 async function requestJson(url, options = {}) {
   let response;
@@ -139,6 +141,52 @@ function selectionInfo() {
   return { indexes, start: indexes[0], end: indexes.at(-1), contiguous };
 }
 
+function wordRangeForEntity(entity) {
+  const directStart = Number(entity?.start_word_index);
+  const directEnd = Number(entity?.end_word_index);
+  if (Number.isInteger(directStart) && Number.isInteger(directEnd)) {
+    return { start: directStart, end: directEnd };
+  }
+  const itemRanges = (entity?.items || [])
+    .map((item) => wordRangeForEntity(item))
+    .filter(Boolean);
+  if (itemRanges.length) {
+    return {
+      start: Math.min(...itemRanges.map((range) => range.start)),
+      end: Math.max(...itemRanges.map((range) => range.end)),
+    };
+  }
+  const startTime = Number(entity?.start);
+  const endTime = Number(entity?.end);
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return null;
+  const indexes = (state?.words || [])
+    .filter((word) => Number(word.end) > startTime && Number(word.start) < endTime)
+    .map((word) => word.wordIndex);
+  return indexes.length ? { start: indexes[0], end: indexes.at(-1) } : null;
+}
+
+function selectTranscriptWordRange(entity) {
+  const range = wordRangeForEntity(entity);
+  if (!range || range.start < 0 || range.end >= (state?.words?.length || 0) || range.end < range.start) {
+    setSaveStatus("当前 Asset 没有可映射的逐字稿范围", true);
+    return false;
+  }
+  selectedWords.clear();
+  for (let wordIndex = range.start; wordIndex <= range.end; wordIndex += 1) {
+    selectedWords.add(wordIndex);
+  }
+  setSaveStatus("");
+  renderTranscriptClasses();
+  renderControls();
+  requestAnimationFrame(() => {
+    elements.transcript.querySelector(`[data-word-index="${range.start}"]`)?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+    });
+  });
+  return true;
+}
+
 function assetTypeDef(typeId) {
   return state?.catalog?.assetTypes?.find((item) => item.id === typeId) || null;
 }
@@ -198,79 +246,59 @@ function selectionHasEffect(range, assetId, typeId, config) {
   return true;
 }
 
-function compatibleEffectTypes(capabilities) {
-  return (state?.catalog?.effectTypes || []).filter((effectType) => (
-    (effectType.timing_models || []).includes("word_range")
-    &&
-    selectableEffectAssets().some((asset) => (
-      (effectType.requires_capabilities || []).every((capability) => (
-        (assetTypeDef(asset.type)?.capabilities || []).includes(capability)
-      ))
-    ))
-  ));
-}
-
-function selectableEffectAssets() {
-  const assets = [];
-  const range = selectionInfo();
-  if (range?.contiguous) {
-    const structured = structuredItemForWord(range.start);
-    if (structured) {
-      const asset = state.composition.assets.find((item) => item.id === structured.group.id);
-      if (asset) assets.push(asset);
-    }
-    const image = imageOverlayForWord(range.start);
-    if (image) {
-      const asset = state.composition.assets.find((item) => item.id === image.id);
-      if (asset) assets.push(asset);
-    }
-  }
-  for (const asset of state.composition.assets.filter((item) => item.origin?.created_by === "system")) {
-    if (!assets.some((candidate) => candidate.id === asset.id)) assets.push(asset);
-  }
-  return assets;
-}
-
-function selectedAssetCapabilities() {
-  const range = selectionInfo();
-  const capabilities = new Set();
-  if (range?.contiguous) {
-    const structured = structuredItemForWord(range.start);
-    if (structured) {
-      for (const capability of assetTypeDef(structured.group.type)?.capabilities || []) capabilities.add(capability);
-    }
-    const image = imageOverlayForWord(range.start);
-    if (image) {
-      const asset = state.composition.assets.find((item) => item.id === image.id);
-      for (const capability of assetTypeDef(asset?.type)?.capabilities || []) capabilities.add(capability);
-    }
-  }
-  for (const asset of state.composition.assets.filter((item) => item.origin?.created_by === "system")) {
-    for (const capability of assetTypeDef(asset.type)?.capabilities || []) capabilities.add(capability);
-  }
-  return [...capabilities];
-}
-
-function defaultTargetForEffect(effectType) {
-  const required = effectType.requires_capabilities || [];
-  const candidates = selectableEffectAssets().filter((asset) => (
+function defaultEffectTargetId() {
+  return state?.composition?.assets.find((asset) => (
     asset.enabled !== false
-    && required.every((capability) => (assetTypeDef(asset.type)?.capabilities || []).includes(capability))
-  ));
-  const selectedOverlay = candidates.find((asset) => asset.origin?.created_by !== "system");
-  if (selectedOverlay) return selectedOverlay.id;
-  const preferredSource = effectType.ui?.preferred_target_source;
-  const preferred = candidates.find((asset) => (
-    !preferredSource || (assetTypeDef(asset.type)?.source_kinds || []).includes(preferredSource)
-  ));
-  return preferred?.id || candidates[0]?.id || null;
+    && (assetTypeDef(asset.type)?.source_kinds || []).includes("input.video")
+  ))?.id || null;
+}
+
+function effectTargetAsset() {
+  const selected = state?.composition?.assets.find((asset) => asset.id === selectedEffectTargetId);
+  if (selected && selected.enabled !== false) return selected;
+  const fallbackId = defaultEffectTargetId();
+  selectedEffectTargetId = fallbackId;
+  return state?.composition?.assets.find((asset) => asset.id === fallbackId) || null;
+}
+
+function effectTargetLabel(asset = effectTargetAsset()) {
+  if (!asset) return "未选择";
+  const label = assetTypeDef(asset.type)?.ui?.label || asset.type || asset.id;
+  if (asset.origin?.created_by === "system") return label;
+  const peers = state.composition.assets.filter((candidate) => candidate.type === asset.type);
+  const index = peers.findIndex((candidate) => candidate.id === asset.id);
+  return peers.length > 1 && index >= 0 ? `${label} ${index + 1}` : label;
+}
+
+function effectTypeSupportsTarget(effectType, asset = effectTargetAsset()) {
+  if (!asset || asset.enabled === false || !(effectType?.timing_models || []).includes("word_range")) return false;
+  const capabilities = assetTypeDef(asset.type)?.capabilities || [];
+  return (effectType.requires_capabilities || []).every((capability) => capabilities.includes(capability));
+}
+
+function renderEffectTarget() {
+  const asset = effectTargetAsset();
+  elements.effectTargetBadge.textContent = `作用于：${effectTargetLabel(asset)}`;
+  elements.effectTargetBadge.title = asset ? `${effectTargetLabel(asset)} · ${asset.id}` : "当前没有可用的效果目标";
+}
+
+function selectEffectTarget(assetId) {
+  const asset = state?.composition?.assets.find((candidate) => candidate.id === assetId);
+  if (!asset || asset.enabled === false) return;
+  selectedEffectTargetId = asset.id;
+  renderEffectTarget();
+  renderCaptionSelection();
+  renderStructuredSelection();
+  renderImageSelection();
+  renderControls();
 }
 
 function renderEffectCatalog() {
   if (!elements.effectButtons || !state?.catalog) return;
-  const capabilities = selectedAssetCapabilities();
   const fragment = document.createDocumentFragment();
-  for (const effectType of compatibleEffectTypes(capabilities)) {
+  for (const effectType of state.catalog.effectTypes.filter((item) => (
+    (item.timing_models || []).includes("word_range")
+  ))) {
     const presets = effectType.ui?.presets?.length
       ? effectType.ui.presets
       : [{ id: effectType.id, label: effectType.ui?.label || effectType.id, config: {} }];
@@ -286,18 +314,16 @@ function renderEffectCatalog() {
       fragment.append(button);
     }
   }
-  const videoType = assetTypeDef(state.composition.assets.find((item) => item.id === systemAssetId("transform.scale"))?.type);
-  if (videoType?.ui?.clear_label) {
-    const clear = document.createElement("button");
-    clear.type = "button";
-    clear.className = "scale-button scale-button--clear";
-    clear.dataset.directEffect = "";
-    clear.dataset.clearEffect = "";
-    clear.textContent = videoType.ui.clear_label;
-    clear.addEventListener("click", () => void clearSelectedEffects(videoType.ui.clear_channels || ["transform.scale"]));
-    fragment.append(clear);
-  }
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "scale-button scale-button--clear";
+  clear.dataset.directEffect = "";
+  clear.dataset.clearEffect = "";
+  clear.textContent = "清除当前对象效果";
+  clear.addEventListener("click", () => void clearSelectedEffects());
+  fragment.append(clear);
   elements.effectButtons.replaceChildren(fragment);
+  renderEffectTarget();
   renderControls();
 }
 
@@ -338,6 +364,9 @@ function renderTranscript() {
 function beginPaint(event, wordIndex) {
   if (event.button !== 0) return;
   event.preventDefault();
+  const videoTargetId = defaultEffectTargetId();
+  if (selectedEffectTargetId !== videoTargetId) selectedWords.clear();
+  selectEffectTarget(videoTargetId);
   dragging = true;
   paintShouldSelect = !selectedWords.has(wordIndex);
   paintedDuringDrag = new Set();
@@ -400,17 +429,25 @@ function renderTranscriptClasses() {
 
 function renderControls() {
   const range = selectionInfo();
+  const target = effectTargetAsset();
   for (const button of elements.effectButtons?.querySelectorAll("[data-selection-effect]") || []) {
     const effectType = effectTypeDef(button.dataset.effectTypeId);
     const preset = (effectType?.ui?.presets || []).find((item) => item.id === button.dataset.presetId)
       || { config: {} };
-    const target = defaultTargetForEffect(effectType || { requires_capabilities: [] });
-    const selected = selectionHasEffect(range, target, button.dataset.effectTypeId, preset.config);
-    button.disabled = !range?.contiguous || savingEffect;
+    const supported = effectTypeSupportsTarget(effectType, target);
+    const selected = selectionHasEffect(range, target?.id, button.dataset.effectTypeId, preset.config);
+    button.disabled = !range?.contiguous || !supported || savingEffect;
+    button.title = supported
+      ? `${button.textContent} · 作用于${effectTargetLabel(target)}`
+      : `${effectTargetLabel(target)}不支持${effectType?.ui?.label || button.textContent}`;
     button.setAttribute("aria-pressed", String(selected));
   }
   for (const button of elements.effectButtons?.querySelectorAll("[data-direct-effect]") || []) {
-    button.disabled = selectedWords.size === 0 || savingEffect;
+    const hasSupportedEffect = (state?.catalog?.effectTypes || []).some((effectType) => (
+      effectTypeSupportsTarget(effectType, target)
+    ));
+    button.disabled = selectedWords.size === 0 || !hasSupportedEffect || savingEffect;
+    button.title = `清除${effectTargetLabel(target)}在当前范围内的效果`;
   }
   for (const button of elements.assetCreateButtons?.querySelectorAll("[data-structured-action]") || []) {
     button.disabled = !range?.contiguous || savingOverlays;
@@ -470,16 +507,20 @@ function selectCaptionText(caption) {
   structuredBoxSelected = false;
   structuredSelectedItemId = null;
   imageBoxSelected = false;
+  selectEffectTarget(captionsAsset()?.id);
+  selectTranscriptWordRange(caption);
   renderStructuredSelection();
   renderImageSelection();
   renderFontControls();
 }
 
-function selectStructuredText(groupId) {
+function selectStructuredText(groupId, selectionEntity = null) {
   if (!groupId) return;
   selectedTextTarget = { kind: "overlay", groupId };
   captionBoxSelected = false;
   imageBoxSelected = false;
+  selectEffectTarget(groupId);
+  selectTranscriptWordRange(selectionEntity || structuredGroupById(groupId));
   renderCaptionSelection();
   renderImageSelection();
   renderFontControls();
@@ -998,6 +1039,9 @@ async function loadState(options = {}) {
     const nextState = await requestJson("/api/state");
     const firstLoad = !state;
     state = nextState;
+    if (!state.composition.assets.some((asset) => asset.id === selectedEffectTargetId && asset.enabled !== false)) {
+      selectedEffectTargetId = defaultEffectTargetId();
+    }
     renderEngineCompatible = state.renderEngineVersion === requiredRenderEngineVersion
       && Boolean(state.playbackScene)
       && Array.isArray(state.playbackEffects)
@@ -1149,9 +1193,11 @@ function setCaptionFontSizeInState(cueId, fontSizeRatio) {
 }
 
 function renderCaptionSelection() {
-  elements.subtitleOverlay.classList.toggle("subtitle-overlay--selected", captionBoxSelected);
+  const selectedForEffects = selectedEffectTargetId === captionsAsset()?.id;
+  const selected = captionBoxSelected || selectedForEffects;
+  elements.subtitleOverlay.classList.toggle("subtitle-overlay--selected", selected);
   elements.subtitleOverlay.classList.toggle("subtitle-overlay--dragging", Boolean(captionInteraction));
-  elements.subtitleOverlay.setAttribute("aria-pressed", String(captionBoxSelected));
+  elements.subtitleOverlay.setAttribute("aria-pressed", String(selected));
 }
 
 async function saveCaptionBox(box, previousBox) {
@@ -1316,9 +1362,11 @@ function setImageBoxInState(overlayId, box) {
 }
 
 function renderImageSelection() {
-  elements.imageOverlay.classList.toggle("image-overlay--selected", imageBoxSelected);
+  const selectedForEffects = selectedEffectTargetId === elements.imageOverlay.dataset.overlayId;
+  const selected = imageBoxSelected || selectedForEffects;
+  elements.imageOverlay.classList.toggle("image-overlay--selected", selected);
   elements.imageOverlay.classList.toggle("image-overlay--dragging", Boolean(imageInteraction));
-  elements.imageOverlay.setAttribute("aria-pressed", String(imageBoxSelected));
+  elements.imageOverlay.setAttribute("aria-pressed", String(selected));
 }
 
 function saveImageBox(overlayId, box) {
@@ -1338,6 +1386,8 @@ function beginImageInteraction(event) {
   structuredBoxSelected = false;
   structuredSelectedItemId = null;
   clearSelectedTextTarget();
+  selectEffectTarget(overlay.id);
+  selectTranscriptWordRange(overlay);
   const startBox = normalizedCaptionBox(overlay.box);
   imageInteraction = {
     pointerId: event.pointerId,
@@ -1483,14 +1533,18 @@ function resizeKeywordBoxesInState(groupId, startItemBoxes, widthScale, layout =
 }
 
 function renderStructuredSelection() {
-  elements.structuredOverlay.classList.toggle("structured-overlay--selected", structuredBoxSelected);
+  const selectedForEffects = selectedEffectTargetId === elements.structuredOverlay.dataset.overlayId;
+  elements.structuredOverlay.classList.toggle(
+    "structured-overlay--selected",
+    structuredBoxSelected || Boolean(structuredSelectedItemId) || selectedForEffects,
+  );
   elements.structuredOverlay.classList.toggle(
     "structured-overlay--dragging",
     Boolean(structuredInteraction?.target === "group"),
   );
   elements.structuredOverlay.setAttribute(
     "aria-pressed",
-    String(structuredBoxSelected || Boolean(structuredSelectedItemId)),
+    String(structuredBoxSelected || Boolean(structuredSelectedItemId) || selectedForEffects),
   );
   for (const itemElement of elements.structuredList.querySelectorAll("[data-item-id]")) {
     const selected = itemElement.dataset.itemId === structuredSelectedItemId;
@@ -1553,7 +1607,7 @@ function beginStructuredInteraction(event) {
   const resizingFont = Boolean(event.target.closest(".structured-item-resize-handle"));
   structuredBoxSelected = !item;
   structuredSelectedItemId = item?.id || null;
-  selectStructuredText(group.id);
+  selectStructuredText(group.id, item || group);
   const startBox = normalizedCaptionBox(item?.box || group.box);
   const startFontSizeRatio = normalizedStructuredFontSizeRatio(group.style.font_size_ratio);
   const startItemBoxes = isItems
@@ -1680,12 +1734,12 @@ async function toggleSelectionEffect(effectType, preset, button) {
     setSaveStatus("当前选择不连续，请补齐或取消多余文字", true);
     return;
   }
-  const target = defaultTargetForEffect(effectType);
-  if (!target) {
-    setSaveStatus(`当前时间范围没有可应用${effectType.ui?.label || effectType.id}的 Asset`, true);
+  const target = effectTargetAsset();
+  if (!effectTypeSupportsTarget(effectType, target)) {
+    setSaveStatus(`${effectTargetLabel(target)}不支持${effectType.ui?.label || effectType.id}`, true);
     return;
   }
-  const enabled = !selectionHasEffect(range, target, effectType.id, preset.config);
+  const enabled = !selectionHasEffect(range, target.id, effectType.id, preset.config);
   const effectLabel = button.textContent.trim();
   try {
     savingEffect = true;
@@ -1697,7 +1751,7 @@ async function toggleSelectionEffect(effectType, preset, button) {
         replace_range: true,
         enabled,
         type: effectType.id,
-        target: { asset_id: target },
+        target: { asset_id: target.id },
         start_word_index: range.start,
         end_word_index: range.end,
         config: preset.config,
@@ -1715,13 +1769,17 @@ async function toggleSelectionEffect(effectType, preset, button) {
   }
 }
 
-async function clearSelectedEffects(channels) {
+async function clearSelectedEffects() {
   const range = selectionInfo();
   if (!range?.contiguous) {
     setSaveStatus("请先选择连续文字", true);
     return;
   }
-  const videoId = systemAssetId("transform.scale");
+  const target = effectTargetAsset();
+  if (!target) {
+    setSaveStatus("当前没有可清除效果的 Asset", true);
+    return;
+  }
   try {
     savingEffect = true;
     renderControls();
@@ -1731,14 +1789,14 @@ async function clearSelectedEffects(channels) {
       body: JSON.stringify({
         replace_range: true,
         enabled: false,
-        clear_channels: channels,
-        target: { asset_id: videoId },
+        clear_channels: true,
+        target: { asset_id: target.id },
         start_word_index: range.start,
         end_word_index: range.end,
       }),
     });
     selectedWords.clear();
-    setSaveStatus("已清除并热重载");
+    setSaveStatus(`${effectTargetLabel(target)}效果已清除并热重载`);
     await loadState();
     previewSelectionRange(range);
   } catch (error) {
@@ -2079,7 +2137,10 @@ document.addEventListener("pointerdown", (event) => {
   }
 });
 elements.playPauseButton.addEventListener("click", togglePlayback);
-elements.previewCanvas.addEventListener("click", togglePlayback);
+elements.previewCanvas.addEventListener("click", () => {
+  selectEffectTarget(defaultEffectTargetId());
+  togglePlayback();
+});
 elements.seekSlider.addEventListener("pointerdown", () => { seeking = true; });
 elements.seekSlider.addEventListener("input", () => {
   elements.video.currentTime = Number(elements.seekSlider.value);

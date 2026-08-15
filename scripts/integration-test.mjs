@@ -55,6 +55,7 @@ try {
   assert.match(reviewHtml, /id="structuredOverlay"/);
   assert.match(reviewHtml, /id="structuredEditor"/);
   assert.match(reviewHtml, /id="effectButtons"/);
+  assert.match(reviewHtml, /id="effectTargetBadge"/);
   assert.match(reviewHtml, /id="assetCreateButtons"/);
   assert.match(reviewHtml, /id="imageOverlay"/);
   assert.match(reviewHtml, /id="imageResizeHandle"/);
@@ -70,6 +71,13 @@ try {
   assert.match(reviewApp, /ui\?\.presets/);
   assert.match(reviewApp, /segment\.style\?\.font_scale/);
   assert.match(reviewApp, /caption\.layout_font_scale/);
+  assert.match(reviewApp, /selectedEffectTargetId/);
+  assert.match(reviewApp, /effectTypeSupportsTarget/);
+  assert.match(reviewApp, /function selectTranscriptWordRange/);
+  assert.match(reviewApp, /selectEffectTarget\(videoTargetId\)/);
+  assert.match(reviewApp, /selectTranscriptWordRange\(caption\)/);
+  assert.match(reviewApp, /selectStructuredText\(group\.id, item \|\| group\)/);
+  assert.match(reviewApp, /selectTranscriptWordRange\(overlay\)/);
   assert.match(reviewApp, /overlay\.style\.bottom/);
   assert.match(reviewApp, /mode === "font-resize"/);
   assert.match(reviewApp, /setCaptionFontSizeInState/);
@@ -91,7 +99,7 @@ try {
   const catalog = await profileResponse.json();
   assert.ok(catalog.effectTypes.some((item) => item.id === "base.scale"));
   assert.ok(catalog.effectTypes.some((item) => item.id === "test-ip.fade"));
-  assert.ok(catalog.effectTypes.some((item) => item.ui?.presets?.some((preset) => preset.label === "短促重点")));
+  assert.ok(catalog.effectTypes.some((item) => item.ui?.presets?.some((preset) => preset.label === "瞬间放大")));
   assert.ok(catalog.effectTypes.some((item) => item.ui?.presets?.some((preset) => preset.label === "大字号、亮黄色")));
   assert.ok(catalog.assetTypes.some((item) => item.ui?.create_from_selection && item.capabilities.includes("ordered-items")));
 
@@ -118,6 +126,8 @@ try {
   assert.equal(captionToggleResponse.status, 200);
   const toggledState = await (await fetch(`${url}api/state`)).json();
   assert.equal(toggledState.captionTrack.enabled, true);
+  assert.ok(Number.isInteger(toggledState.playbackCaptions[0].start_word_index));
+  assert.ok(Number.isInteger(toggledState.playbackCaptions[0].end_word_index));
 
   const firstCueId = toggledState.playbackCaptions[0].source_cue_id;
   const captionFontResponse = await fetch(`${url}api/assets/${encodeURIComponent(captionsId)}`, {
@@ -188,6 +198,8 @@ try {
   const progressiveState = await (await fetch(`${url}api/state`)).json();
   assert.equal(progressiveState.structuredOverlayTrack.groupCount, 1);
   assert.equal(progressiveState.playbackOverlays.length, 1);
+  assert.ok(Number.isInteger(progressiveState.structuredOverlayTrack.groups[0].items[0].start_word_index));
+  assert.ok(Number.isInteger(progressiveState.structuredOverlayTrack.groups[0].items[0].end_word_index));
   assert.equal(progressiveState.structuredOverlayTrack.groups[0].style.font_family, "华文中宋");
   assert.equal(progressiveState.structuredOverlayTrack.groups[0].style.font_size_ratio, 0.06);
 
@@ -254,13 +266,15 @@ try {
   const imageState = await (await fetch(`${url}api/state`)).json();
   assert.equal(imageState.imageOverlayTrack.groupCount, 1);
   assert.equal(imageState.playbackImageOverlays[0].fit, "contain");
+  assert.ok(Number.isInteger(imageState.imageOverlayTrack.groups[0].start_word_index));
+  assert.ok(Number.isInteger(imageState.imageOverlayTrack.groups[0].end_word_index));
   const servedImageResponse = await fetch(`${url}${imageState.playbackImageOverlays[0].asset_url.slice(1)}`);
   assert.equal(servedImageResponse.status, 200);
 
   const selectionEnd = Math.min(1, context.words.length - 1);
   const scaleType = imageState.catalog.effectTypes.find((item) => item.id === "base.scale");
   const textType = imageState.catalog.effectTypes.find((item) => item.id === "base.text-style");
-  const scalePreset = scaleType.ui.presets.find((item) => item.label === "短促重点");
+  const scalePreset = scaleType.ui.presets.find((item) => item.label === "瞬间放大");
   const textPreset = textType.ui.presets.find((item) => item.label === "大字号、亮黄色");
   const selectionEffectsResponse = await fetch(`${url}api/effects`, {
     method: "POST",
