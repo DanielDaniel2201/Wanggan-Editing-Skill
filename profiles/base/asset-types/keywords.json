@@ -62,7 +62,7 @@
             "id": { "type": "string", "minLength": 1 },
             "start_word_index": { "type": "integer", "minimum": 0 },
             "end_word_index": { "type": "integer", "minimum": 0 },
-            "display_text": { "type": "string", "minLength": 2, "maxLength": 3 },
+            "display_text": { "type": "string", "minLength": 2, "maxLength": 8 },
             "box": {
               "type": "object",
               "additionalProperties": false,

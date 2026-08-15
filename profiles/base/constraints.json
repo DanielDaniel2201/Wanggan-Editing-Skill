@@ -43,7 +43,7 @@
         {
           "asset_type": "base.keywords",
           "max_items": 4,
-          "item_text": { "min_chars": 2, "max_chars": 3 },
+          "item_text": { "min_chars": 2, "max_chars": 8 },
           "items_ordered": true
         },
         {

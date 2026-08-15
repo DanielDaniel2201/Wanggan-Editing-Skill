@@ -46,7 +46,7 @@
 - `base.progressive-reveal`，`timing.kind=asset_items`，`retain_until=asset_end`
 - 需要弹出时再挂 `base.pop`，`timing.kind=item_enter`；不需要动画就不要创建 pop
 
-`display_text` 必须是 2–3 个字符，时间范围仍可覆盖对应完整原话。不要把整句塞进一个词块。
+`display_text` 为 2–8 个字符：中文 2–4 字词组（如“网感剪辑”“画面缩放”）或 2–8 个英文字母的英文词（如 skill、agent）都可以。时间范围仍可覆盖对应完整原话。不要把整句塞进一个词块；同一 asset 可放多个条目（最多 4 个），条目必须落在 asset 生命周期内。
 
 ## 5. 何时创建 `base.list`
 
