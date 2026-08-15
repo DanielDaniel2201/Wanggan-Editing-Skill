@@ -1,6 +1,6 @@
 ---
 name: wanggan-editing
-description: 为口播视频按逐字时间戳添加网感缩放、普通烧录字幕、逐条累积清单、渐进关键词散布和定时图片贴图。由 Agent 阅读 Profile 选择规则后写入 composition.json，脚本负责校验、审查网页和确认后导出 MP4。适用于网感剪辑、重点放大、负面缩小、字幕烧录、清单枚举、Hook 关键词、图片 overlay 和人机协同初剪。
+description: 为已经剪掉气口和口癖的口播成片添加网感缩放、烧录字幕、清单、关键词和贴图。启用前必须同时具备剪好的 MP4、分句 SRT 和字级时间戳 JSON，缺一不可；缺件时引导使用 Koubo-Editing-Skill，不要在本 Skill 里生成这三样。适用于网感剪辑、重点放大、负面缩小、字幕烧录、清单枚举、Hook 关键词、图片 overlay 和人机协同初剪。
 ---
 
 # 网感剪辑
@@ -12,6 +12,20 @@ description: 为口播视频按逐字时间戳添加网感缩放、普通烧录�
 - 原视频、words、SRT 和外部图片只读
 - 用户确认前只提供实时预览，不渲染最终 MP4
 
+## 前置条件（缺一不可）
+
+本 Skill 只做网感特效，不做口播粗剪。启用前先检查**当前工作目录**是否同时具备下面三样。缺任何一样就停下来：不要跑 `init`，不要补字幕，不要伪造时间戳。
+
+| 输入 | 是什么 | 常见文件名 |
+|---|---|---|
+| 剪好的口播视频 | 已剪掉气口、口癖、重复和长停顿，只缺网感特效的 MP4 | `*_cut.mp4` |
+| 分句 SRT | 与成片时间线对齐的 UTF-8 字幕 | `*_cut.srt` |
+| 字级时间戳 | 扁平数组，每项含 `text`、`start`、`end` | `*_cut.words.json` |
+
+「剪辑好」不是原片，也不是只粗切过的素材。气口、口癖还在的视频不能当输入。
+
+缺件时告诉使用者：先用 [Koubo-Editing-Skill](https://github.com/DanielDaniel2201/Koubo-Editing-Skill) 从原始口播导出这三样，再回到本 Skill。
+
 ## 工作流程
 
 1. 运行环境检查
@@ -20,9 +34,7 @@ description: 为口播视频按逐字时间戳添加网感缩放、普通烧录�
 node scripts/wanggan.mjs doctor
 ```
 
-2. 用三个强制输入初始化任务目录
-
-必须同时提供剪辑好的口播 MP4、扁平字级 JSON（每项含 `text`、`start`、`end`）和对齐的 UTF-8 SRT。缺一项就拒绝。
+2. 用已经确认存在的三个输入初始化任务目录
 
 ```powershell
 node scripts/wanggan.mjs init --video "<视频路径>" --words "<逐字稿路径>" --srt "<SRT 路径>" --profile base --project "<任务目录>"
@@ -70,7 +82,8 @@ node scripts/wanggan.mjs profile sync --project "<任务目录>"
 
 ## 硬性规则
 
-- 初始化强制接收视频、扁平 words JSON 和 SRT；SRT 必须与 words 顺序对齐
+- 缺前置三件套时禁止继续，见上文「前置条件」
+- 初始化强制接收这三样；SRT 必须与 words 顺序对齐
 - `composition.json` 是 Asset/Effect 唯一真源；不读取、写入或迁移旧工程格式
 - Core 不内置 `base.keywords`、`base.scale` 等业务类型；类型只来自已加载 Profile
 - 四种视频缩放都是 `base.scale` 的不同 config；大字亮色是 `base.text-style` 的 config
