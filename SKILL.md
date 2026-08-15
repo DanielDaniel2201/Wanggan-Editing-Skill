@@ -24,7 +24,7 @@ description: 为已经剪掉气口和口癖的口播成片添加网感缩放、�
 
 「剪辑好」不是原片，也不是只粗切过的素材。气口、口癖还在的视频不能当输入。
 
-缺件时告诉使用者：先用 [Koubo-Editing-Skill](https://github.com/DanielDaniel2201/Koubo-Editing-Skill) 从原始口播导出这三样，再回到本 Skill。
+缺件时告诉使用者：先用 Koubo-Editing-Skill (https://github.com/DanielDaniel2201/Koubo-Editing-Skill) 从原始口播导出这三样，再回到本 Skill。反馈中必须保留这个完整 URL，不要只写 Skill 名称或只使用不可见链接。
 
 ## 工作流程
 
