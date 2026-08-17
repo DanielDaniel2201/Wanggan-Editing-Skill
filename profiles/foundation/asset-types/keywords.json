@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "kind": "asset_type",
+  "id": "base.keywords",
+  "renderer": "core.text-group",
+  "source_kinds": ["agent-generated"],
+  "capabilities": [
+    "visual", "text.items", "ordered-items", "text.style", "layout.items",
+    "transform.scale", "transform.translate-y", "style.opacity"
+  ],
+  "default_layer": 400,
+  "defaults": {
+    "enabled": true,
+    "source": { "kind": "agent-generated" },
+    "props": {
+      "layout": "auto",
+      "style": {
+        "font_family": "Microsoft YaHei",
+        "font_size_ratio": 0.075,
+        "color": "#FFFFFF",
+        "stroke_color": "#000000",
+        "stroke_width_ratio": 0.0055,
+        "item_gap_ratio": 0,
+        "align": "center"
+      },
+      "items": []
+    }
+  },
+  "instance_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["items"],
+    "properties": {
+      "layout": { "enum": ["auto", "custom"] },
+      "style": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "font_family": { "enum": ["Microsoft YaHei", "华文中宋"] },
+          "font_size_ratio": { "type": "number", "minimum": 0.015, "maximum": 0.12 },
+          "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+          "stroke_color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+          "stroke_width_ratio": { "type": "number", "minimum": 0, "maximum": 0.03 },
+          "item_gap_ratio": { "type": "number", "minimum": 0, "maximum": 0.08 },
+          "align": { "const": "center" }
+        }
+      },
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 4,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["start_word_index", "end_word_index"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "start_word_index": { "type": "integer", "minimum": 0 },
+            "end_word_index": { "type": "integer", "minimum": 0 },
+            "display_text": { "type": "string", "minLength": 2, "maxLength": 8 },
+            "box": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["x", "y", "width", "height"],
+              "properties": {
+                "x": { "type": "number", "minimum": 0, "maximum": 1 },
+                "y": { "type": "number", "minimum": 0, "maximum": 1 },
+                "width": { "type": "number", "minimum": 0.1, "maximum": 1 },
+                "height": { "type": "number", "minimum": 0.01, "maximum": 1 },
+                "unit": { "const": "ratio" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "ui": {
+    "label": "关键词",
+    "selectable": true,
+    "create_from_selection": true,
+    "create_label": "新建关键词",
+    "default_effects": [
+      {
+        "type": "base.progressive-reveal",
+        "timing": { "kind": "asset_items" },
+        "config": { "retain_until": "asset_end" }
+      }
+    ]
+  }
+}

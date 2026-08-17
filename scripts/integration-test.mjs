@@ -93,6 +93,8 @@ try {
   assert.match(reviewApp, /function markServiceDisconnected/);
   assert.match(reviewApp, /elements\.renderButton\.textContent = "正在提交"/);
   assert.match(reviewApp, /function saveSelectedFont/);
+  assert.match(reviewApp, /entryTranslateY/);
+  assert.match(reviewApp, /colorWithOpacity/);
 
   const profileResponse = await fetch(`${url}api/profile`);
   assert.equal(profileResponse.status, 200);
@@ -107,7 +109,7 @@ try {
   assert.equal(stateResponse.status, 200);
   const state = await stateResponse.json();
   assert.ok(state.words.length > 0);
-  assert.equal(state.renderEngineVersion, 20);
+  assert.equal(state.renderEngineVersion, 21);
   assert.ok(state.playbackScene);
   assert.ok(Array.isArray(state.playbackEffects));
   assert.ok(Array.isArray(state.playbackCaptions));
@@ -202,6 +204,9 @@ try {
   assert.ok(Number.isInteger(progressiveState.structuredOverlayTrack.groups[0].items[0].end_word_index));
   assert.equal(progressiveState.structuredOverlayTrack.groups[0].style.font_family, "华文中宋");
   assert.equal(progressiveState.structuredOverlayTrack.groups[0].style.font_size_ratio, 0.06);
+  assert.equal(progressiveState.structuredOverlayTrack.groups[0].container.background_color, "#111827");
+  assert.equal(progressiveState.playbackOverlays[0].enter_animation, "translate-opacity");
+  assert.equal(progressiveState.playbackOverlays[0].effects.entryTranslateY.length, 1);
 
   const listId = progressiveState.structuredOverlayTrack.groups[0].id;
   await fetch(`${url}api/assets/${encodeURIComponent(listId)}`, { method: "DELETE" });

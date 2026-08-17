@@ -5,6 +5,7 @@ import {
   SKILL_ROOT,
   WangganError,
   deepClone,
+  deepMerge,
   readJson,
   sha256Hex,
   writeJson,
@@ -23,11 +24,14 @@ const PROFILE_MANIFEST_SCHEMA = {
     schema_version: { const: 1 },
     id: { type: "string", minLength: 1 },
     version: { type: "string", minLength: 1 },
+    definition_namespace: { type: "string", minLength: 1 },
     extends: { type: "array", items: { type: "string" } },
     selection_rules: { type: "array", items: { type: "string" } },
+    selection_rules_mode: { enum: ["append", "replace"] },
     asset_types: { type: "array", items: { type: "string" } },
     effect_types: { type: "array", items: { type: "string" } },
     constraints: { type: "array", items: { type: "string" } },
+    patches: { type: "array", items: { type: "string" } },
     runtime_modules: { type: "array", items: { type: "string" } },
   },
 };
@@ -94,10 +98,34 @@ const CONSTRAINTS_FILE_SCHEMA = {
   },
 };
 
+const PATCHES_FILE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["schema_version", "patches"],
+  properties: {
+    schema_version: { const: 1 },
+    patches: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "id", "changes"],
+        properties: {
+          kind: { enum: ["asset_type", "effect_type", "constraint"] },
+          id: { type: "string", minLength: 1 },
+          changes: { type: "object" },
+        },
+      },
+    },
+  },
+};
+
 const validateManifest = compileSchema(PROFILE_MANIFEST_SCHEMA, "profile.json");
 const validateAssetType = compileSchema(ASSET_TYPE_SCHEMA, "asset_type");
 const validateEffectType = compileSchema(EFFECT_TYPE_SCHEMA, "effect_type");
 const validateConstraintsFile = compileSchema(CONSTRAINTS_FILE_SCHEMA, "constraints.json");
+const validatePatchesFile = compileSchema(PATCHES_FILE_SCHEMA, "patches.json");
 
 function assertValid(validator, value, label) {
   if (validator(value)) return value;
@@ -167,6 +195,38 @@ function mergeById(kind, parentItems, childItems, label) {
   return [...result.values()];
 }
 
+function assertSafePatchValue(value, trail = []) {
+  if (!value || typeof value !== "object") return;
+  for (const [key, nested] of Object.entries(value)) {
+    if (["__proto__", "prototype", "constructor"].includes(key)) {
+      throw new WangganError("definition patch 包含不安全字段", { path: [...trail, key] });
+    }
+    assertSafePatchValue(nested, [...trail, key]);
+  }
+}
+
+function applyPatches(kind, items, patches, label, validator) {
+  const result = new Map(items.map((item) => [item.id, item]));
+  for (const patch of patches.filter((item) => item.kind === kind)) {
+    const current = result.get(patch.id);
+    if (!current) {
+      throw new WangganError(`${label} patch 指向未注册定义`, { id: patch.id, kind });
+    }
+    const reserved = ["schema_version", "kind", "id", "override"]
+      .filter((key) => Object.hasOwn(patch.changes, key));
+    if (reserved.length) {
+      throw new WangganError(`${label} patch 不得修改定义身份字段`, {
+        id: patch.id,
+        reserved,
+      });
+    }
+    assertSafePatchValue(patch.changes);
+    const merged = deepMerge(current, patch.changes);
+    result.set(patch.id, assertValid(validator, merged, `${label} patch ${patch.id}`));
+  }
+  return [...result.values()];
+}
+
 function createRuntimeApi(registry) {
   return {
     registerAssetRenderer: (id, renderer) => registry.registerAssetRenderer(id, renderer),
@@ -220,7 +280,7 @@ function loadOneProfile(profileDir, stack) {
     files.push(file);
     assetTypes.push(assertOwnedId(
       assertValid(validateAssetType, file.value, file.relativePath),
-      manifest.id,
+      manifest.definition_namespace || manifest.id,
       "AssetType",
     ));
   }
@@ -230,7 +290,7 @@ function loadOneProfile(profileDir, stack) {
     files.push(file);
     effectTypes.push(assertOwnedId(
       assertValid(validateEffectType, file.value, file.relativePath),
-      manifest.id,
+      manifest.definition_namespace || manifest.id,
       "EffectType",
     ));
   }
@@ -240,7 +300,7 @@ function loadOneProfile(profileDir, stack) {
     files.push(file);
     const document = assertValid(validateConstraintsFile, file.value, file.relativePath);
     constraints.push(...document.constraints.map((constraint) => (
-      assertOwnedId(constraint, manifest.id, "Constraint")
+      assertOwnedId(constraint, manifest.definition_namespace || manifest.id, "Constraint")
     )));
   }
   const selectionRules = [];
@@ -273,6 +333,13 @@ function loadOneProfile(profileDir, stack) {
     files.push(file);
     runtimeModules.push(relativePath);
   }
+  const patches = [];
+  for (const relativePath of manifest.patches || []) {
+    const file = readDefinition(profileDir, relativePath, "definition patches");
+    files.push(file);
+    const document = assertValid(validatePatchesFile, file.value, file.relativePath);
+    patches.push(...document.patches);
+  }
 
   return {
     dir: profileDir,
@@ -283,6 +350,7 @@ function loadOneProfile(profileDir, stack) {
     constraints,
     selectionRules,
     runtimeModules,
+    patches,
   };
 }
 
@@ -320,6 +388,16 @@ export async function loadProfile(profileInput, options = {}) {
     assetTypes = mergeById("asset_type", assetTypes, item.assetTypes, "AssetType");
     effectTypes = mergeById("effect_type", effectTypes, item.effectTypes, "EffectType");
     constraints = mergeById("constraint", constraints, item.constraints, "Constraint");
+    assetTypes = applyPatches("asset_type", assetTypes, item.patches, "AssetType", validateAssetType);
+    effectTypes = applyPatches("effect_type", effectTypes, item.patches, "EffectType", validateEffectType);
+    constraints = applyPatches(
+      "constraint",
+      constraints,
+      item.patches,
+      "Constraint",
+      (value) => validateConstraintsFile({ schema_version: 1, constraints: [value] }),
+    );
+    if (item.manifest.selection_rules_mode === "replace") selectionRules.length = 0;
     selectionRules.push(...item.selectionRules);
     files.push(...item.files.map((file) => ({ ...file, profileId: item.manifest.id })));
     for (const relativePath of item.runtimeModules) {

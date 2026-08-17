@@ -1,4 +1,4 @@
 interface:
   display_name: "网感剪辑"
-  short_description: "Profile 驱动的口播视频资产与特效组合审查和导出工具"
-  default_prompt: "Use $wanggan-editing to create and review a Profile-driven talking-head video composition from video, words JSON, and SRT."
+  short_description: "可定制 IP Profile 的口播网感剪辑审查与一致导出"
+  default_prompt: "Use $wanggan-editing to edit a prepared talking-head video or author a reusable custom IP Profile."

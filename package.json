@@ -1,6 +1,6 @@
 {
   "name": "wanggan-editing",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "type": "module",
   "description": "网感剪辑：Profile 驱动的口播视频效果审查与导出",

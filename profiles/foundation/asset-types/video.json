@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "asset_type",
+  "id": "base.video",
+  "renderer": "core.video",
+  "source_kinds": ["input.video"],
+  "capabilities": ["visual", "transform.scale"],
+  "default_layer": 0,
+  "system_instance": {
+    "id": "video.main",
+    "enabled": true,
+    "source": { "input": "video" },
+    "lifecycle": { "kind": "full" },
+    "props": {}
+  },
+  "instance_schema": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "ui": {
+    "label": "主视频",
+    "selectable": true,
+    "clear_label": "清除画面效果",
+    "clear_channels": ["transform.scale"]
+  }
+}

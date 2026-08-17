@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const SKILL_ROOT = fileURLToPath(new URL("../..", import.meta.url));
-export const COMPILER_VERSION = 20;
+export const COMPILER_VERSION = 21;
 
 export class WangganError extends Error {
   constructor(message, details = null, statusCode = 400) {

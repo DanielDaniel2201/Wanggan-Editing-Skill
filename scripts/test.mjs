@@ -286,14 +286,32 @@ const listComposition = compositionWith([{
     ],
   },
   origin: { created_by: "agent", human_modified: false },
-}], [{
-  id: "effect.020",
-  type: "base.progressive-reveal",
-  target: { asset_id: "list.001" },
-  timing: { kind: "asset_items" },
-  config: { retain_until: "asset_end" },
-  origin: { created_by: "agent", human_modified: false },
-}]);
+}], [
+  {
+    id: "effect.020",
+    type: "base.progressive-reveal",
+    target: { asset_id: "list.001" },
+    timing: { kind: "asset_items" },
+    config: { retain_until: "asset_end" },
+    origin: { created_by: "agent", human_modified: false },
+  },
+  {
+    id: "effect.021",
+    type: "base.item-enter",
+    target: { asset_id: "list.001" },
+    timing: { kind: "item_enter" },
+    config: {
+      from_translate_y_ratio: 0.035,
+      to_translate_y_ratio: 0,
+      from_opacity: 0,
+      to_opacity: 1,
+      duration: 0.28,
+      delay: 0,
+      easing: "ease-out",
+    },
+    origin: { created_by: "agent", human_modified: false },
+  },
+]);
 const listCompiled = await compileOf(listComposition);
 assert.equal(listCompiled.structuredOverlayTrack.groupCount, 1);
 assert.equal(listCompiled.playbackOverlays.length, 2);
@@ -302,13 +320,18 @@ assert.equal(listCompiled.playbackOverlays[0].end, 0.8);
 assert.equal(listCompiled.playbackOverlays[0].items.length, 1);
 assert.equal(listCompiled.playbackOverlays[1].items.length, 2);
 assert.equal(listCompiled.structuredOverlayTrack.groups[0].fontSize, 32);
-assert.equal(listCompiled.structuredOverlayTrack.groups[0].requiredHeight, 98);
+assert.equal(listCompiled.structuredOverlayTrack.groups[0].requiredHeight, 124);
+assert.equal(listCompiled.structuredOverlayTrack.groups[0].container.background_color, "#111827");
+assert.equal(listCompiled.playbackOverlays[0].enter_animation, "translate-opacity");
+assert.equal(listCompiled.playbackOverlays[0].effects.entryTranslateY.length, 2);
 assert.deepEqual(
   listCompiled.suppressionRanges.map((range) => [range.start, range.end]),
   [[0.1, 0.3], [0.8, 1]],
 );
 assert.deepEqual(listCompiled.playbackCaptions.map((cue) => cue.text), ["重点"]);
 assert.doesNotMatch(listCompiled.assText, /\\fad\(/);
+assert.match(listCompiled.assText, /\\p1/);
+assert.match(listCompiled.assText, /\\move\(/);
 
 const imageOnlySuppressionProfile = {
   ...profile,

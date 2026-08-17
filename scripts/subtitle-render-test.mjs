@@ -92,9 +92,13 @@ try {
     { text: "幕", start: 1.1, end: 1.3 },
     { text: "继", start: 1.5, end: 1.7 },
     { text: "续", start: 1.7, end: 1.9 },
+    { text: "清", start: 2.1, end: 2.25 },
+    { text: "晰", start: 2.25, end: 2.4 },
+    { text: "可", start: 2.55, end: 2.7 },
+    { text: "信", start: 2.7, end: 2.85 },
   ];
   writeJson(transcriptPath, transcriptWords);
-  fs.writeFileSync(subtitlePath, "1\n00:00:00,500 --> 00:00:02,100\n普通字幕继续\n", "utf8");
+  fs.writeFileSync(subtitlePath, "1\n00:00:00,500 --> 00:00:02,900\n普通字幕继续清晰可信\n", "utf8");
   const words = loadTranscript(transcriptPath);
   const cues = alignCuesToWords(parseSrt(fs.readFileSync(subtitlePath, "utf8"), { duration: 3 }), words);
   const profile = await loadProfile(path.join(
@@ -154,6 +158,20 @@ try {
     },
     origin: { created_by: "agent", human_modified: false },
   });
+  composition.assets.push({
+    id: "list.001",
+    type: "base.list",
+    enabled: true,
+    source: { kind: "agent-generated" },
+    lifecycle: { kind: "word_range", start_word_index: 6, end_word_index: 9 },
+    props: {
+      items: [
+        { start_word_index: 6, end_word_index: 7, display_text: "一、清晰" },
+        { start_word_index: 8, end_word_index: 9, display_text: "二、可信" }
+      ]
+    },
+    origin: { created_by: "agent", human_modified: false },
+  });
   composition.effects.push(
     {
       id: "effect.001",
@@ -195,6 +213,30 @@ try {
       config: { from_opacity: 1, to_opacity: 0.35, interpolation: "linear" },
       origin: { created_by: "agent", human_modified: false },
     },
+    {
+      id: "effect.006",
+      type: "base.progressive-reveal",
+      target: { asset_id: "list.001" },
+      timing: { kind: "asset_items" },
+      config: { retain_until: "asset_end" },
+      origin: { created_by: "agent", human_modified: false },
+    },
+    {
+      id: "effect.007",
+      type: "base.item-enter",
+      target: { asset_id: "list.001" },
+      timing: { kind: "item_enter" },
+      config: {
+        from_translate_y_ratio: 0.035,
+        to_translate_y_ratio: 0,
+        from_opacity: 0,
+        to_opacity: 1,
+        duration: 0.28,
+        delay: 0,
+        easing: "ease-out"
+      },
+      origin: { created_by: "agent", human_modified: false },
+    },
   );
   saveComposition(record.compositionPath, composition, profile, words, record);
   writeProfileLock(record.profileLockPath, profile);
@@ -204,7 +246,7 @@ try {
   assert.equal(result.captions.source, "srt");
   assert.equal(result.captions.cueCount, 1);
   assert.equal(result.structuredOverlays.enabled, true);
-  assert.equal(result.structuredOverlays.groupCount, 1);
+  assert.equal(result.structuredOverlays.groupCount, 2);
   assert.equal(result.imageOverlays.enabled, true);
   assert.equal(result.imageOverlays.count, 1);
   const ass = fs.readFileSync(path.join(tempDir, "render-overlays.ass"), "utf8");
@@ -219,6 +261,9 @@ try {
   assert.match(ass, /字幕/);
   assert.match(ass, /普通人/);
   assert.match(ass, /做字幕/);
+  assert.match(ass, /一、清晰/);
+  assert.match(ass, /\\p1/);
+  assert.match(ass, /\\move\(/);
   assert.match(ass, /\\fscx85\\fscy85/);
   assert.match(ass, /\\alpha&HFF&\\t\(0,180,\\fscx100\\fscy100\\alpha&H00&\)/);
   assert.doesNotMatch(ass, /Dialogue: 0[^\n]*普通/);

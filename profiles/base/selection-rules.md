@@ -52,7 +52,12 @@
 
 同一组有序枚举、步骤或对比项，最多 8 条。条目按口播顺序排列。
 
-每个实例必须挂 `base.progressive-reveal`。默认不挂 `base.pop`；只有条目本身需要被看见“跳出来”时才加。
+每个实例默认同时挂：
+
+- `base.progressive-reveal`：条目按口播进度累积出现
+- `base.item-enter`：条目从下方上移并淡入；需要克制或静态风格时可以不创建
+
+`base.item-enter` 的位移、透明度、duration 与 easing 都来自 Effect config，不是 Renderer 硬编码。
 
 `display_text` 去掉“第一个是”“第二个问题就是”等口语连接词，保留观众要读的条目正文。
 

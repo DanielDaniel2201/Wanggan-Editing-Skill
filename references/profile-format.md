@@ -1,6 +1,6 @@
 # Profile 格式
 
-`profile.json` 是 Profile 根清单，Base 与自定义 Profile 使用同一格式。
+`profile.json` 是 Profile 根清单，Foundation、Base 与自定义 Profile 使用同一格式。
 
 ```json
 {
@@ -8,10 +8,12 @@
   "id": "base",
   "version": "1.0.0",
   "extends": [],
+  "selection_rules_mode": "append",
   "selection_rules": ["selection-rules.md"],
   "asset_types": ["asset-types/video.json"],
   "effect_types": ["effect-types/scale.json"],
   "constraints": ["constraints.json"],
+  "patches": [],
   "runtime_modules": []
 }
 ```
@@ -21,9 +23,33 @@
 - 相对路径相对于当前 Profile 根目录解析，禁止 `..` 越界
 - 新定义的 ID 必须使用当前 Profile namespace；只有显式 `override: true` 可以沿用父级 ID
 - `extends` 按从父到子的顺序合并；相同 ID 默认报错，子定义必须写 `override: true` 才能替换
+- `selection_rules_mode` 默认为 `append`；写 `replace` 会清空父级规则，再加载当前 Profile 的规则
+- `patches` 引用字段级差量文件，只修改列出的字段；数组整体替换，对象递归合并，禁止修改 `schema_version`、`kind`、`id`、`override`
+- `definition_namespace` 仅供内置 Foundation 保留稳定的 `base.*` v3 类型 ID；普通 Profile 不应使用
 - `--profile base` 解析 Skill 内 `profiles/base`，也接受显式目录路径
 - 解析后生成稳定 SHA-256 digest，写入工程 `profile-lock.json`
 - Profile 文件变化后，审查页可以预览，但必须执行 `profile sync` 后才能导出
 - 不支持旧工程格式或迁移入口；工程必须由三个强制输入执行 `init` 创建
 
 详见 [asset-type-format.md](asset-type-format.md)、[effect-type-format.md](effect-type-format.md)、[constraints-format.md](constraints-format.md)。
+
+字段 patch 文件格式：
+
+```json
+{
+  "schema_version": 1,
+  "patches": [
+    {
+      "kind": "asset_type",
+      "id": "base.list",
+      "changes": {
+        "defaults": {
+          "props": {
+            "container": { "background_color": "#10243A" }
+          }
+        }
+      }
+    }
+  ]
+}
+```

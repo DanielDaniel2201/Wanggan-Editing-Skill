@@ -52,22 +52,46 @@ export function buildAssDocument(project, defaultStyle, events) {
   return `${[...header, ...lines].join("\n")}\n`;
 }
 
-export function scaleAtTime(state, time) {
-  if (!state || time < state.start || time >= state.end) return 1;
-  if (state.interpolation !== "linear") return state.to_scale;
+export function easedProgress(progress, easing = "linear") {
+  const value = Math.max(0, Math.min(1, Number(progress)));
+  if (easing === "ease-in") return value * value;
+  if (easing === "ease-out") return 1 - ((1 - value) ** 2);
+  if (easing === "ease-in-out") {
+    return value < 0.5
+      ? 2 * value * value
+      : 1 - (((-2 * value) + 2) ** 2) / 2;
+  }
+  return value;
+}
+
+function animatedValueAtTime(state, time, fromKey, toKey, fallback) {
+  if (!state || time < state.start || time >= state.end) return fallback;
+  const interpolation = state.easing || state.interpolation || "linear";
+  if (interpolation === "step") return Number(state[toKey]);
   const duration = state.end - state.start;
-  if (duration <= 0) return 1;
-  const progress = Math.max(0, Math.min(1, (time - state.start) / duration));
-  return state.from_scale + (state.to_scale - state.from_scale) * progress;
+  if (duration <= 0) return fallback;
+  const progress = easedProgress((time - state.start) / duration, interpolation);
+  const from = Number(state[fromKey] ?? fallback);
+  const to = Number(state[toKey] ?? fallback);
+  return from + (to - from) * progress;
+}
+
+export function scaleAtTime(state, time) {
+  return animatedValueAtTime(state, time, "from_scale", "to_scale", 1);
 }
 
 export function opacityAtTime(state, time) {
-  if (!state || time < state.start || time >= state.end) return 1;
-  if (state.interpolation !== "linear") return state.to_opacity;
-  const duration = state.end - state.start;
-  if (duration <= 0) return 1;
-  const progress = Math.max(0, Math.min(1, (time - state.start) / duration));
-  return state.from_opacity + (state.to_opacity - state.from_opacity) * progress;
+  return animatedValueAtTime(state, time, "from_opacity", "to_opacity", 1);
+}
+
+export function translateYAtTime(state, time) {
+  return animatedValueAtTime(
+    state,
+    time,
+    "from_translate_y_ratio",
+    "to_translate_y_ratio",
+    0,
+  );
 }
 
 export function mergeAdjacentScaleStates(states) {

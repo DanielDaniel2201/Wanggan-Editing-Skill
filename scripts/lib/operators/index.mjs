@@ -3,6 +3,7 @@ import { textStyleOperator } from "./text-style.mjs";
 import { progressiveRevealOperator } from "./progressive-reveal.mjs";
 import { popOperator } from "./pop.mjs";
 import { opacityOperator } from "./opacity.mjs";
+import { translateOpacityOperator } from "./translate-opacity.mjs";
 
 const OPERATORS = [
   scaleOperator,
@@ -10,6 +11,7 @@ const OPERATORS = [
   progressiveRevealOperator,
   popOperator,
   opacityOperator,
+  translateOpacityOperator,
 ];
 
 export function registerBuiltinOperators(registry) {

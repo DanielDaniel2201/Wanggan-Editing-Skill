@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "foundation",
+  "version": "1.0.0",
+  "definition_namespace": "base",
+  "extends": [],
+  "selection_rules": [],
+  "asset_types": [
+    "asset-types/video.json",
+    "asset-types/captions.json",
+    "asset-types/keywords.json",
+    "asset-types/list.json",
+    "asset-types/image.json"
+  ],
+  "effect_types": [
+    "effect-types/scale.json",
+    "effect-types/text-style.json",
+    "effect-types/opacity.json",
+    "effect-types/progressive-reveal.json",
+    "effect-types/pop.json",
+    "effect-types/item-enter.json"
+  ],
+  "constraints": ["constraints.json"],
+  "patches": [],
+  "runtime_modules": []
+}

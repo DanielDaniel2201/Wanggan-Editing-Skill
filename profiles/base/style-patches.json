@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "patches": [
+    {
+      "kind": "asset_type",
+      "id": "base.keywords",
+      "changes": {
+        "defaults": {
+          "props": {
+            "style": { "color": "#FFF08A" }
+          }
+        },
+        "ui": {
+          "default_effects": [
+            {
+              "type": "base.progressive-reveal",
+              "timing": { "kind": "asset_items" },
+              "config": { "retain_until": "asset_end" }
+            },
+            {
+              "type": "base.pop",
+              "timing": { "kind": "item_enter" },
+              "config": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "asset_type",
+      "id": "base.list",
+      "changes": {
+        "defaults": {
+          "props": {
+            "container": {
+              "background_color": "#111827",
+              "background_opacity": 0.82,
+              "border_color": "#FFFFFF",
+              "border_opacity": 0.18,
+              "border_width_ratio": 0.0015,
+              "border_radius_ratio": 0.018,
+              "padding_ratio": 0.018
+            }
+          }
+        },
+        "ui": {
+          "default_effects": [
+            {
+              "type": "base.progressive-reveal",
+              "timing": { "kind": "asset_items" },
+              "config": { "retain_until": "asset_end" }
+            },
+            {
+              "type": "base.item-enter",
+              "timing": { "kind": "item_enter" },
+              "config": {
+                "from_translate_y_ratio": 0.035,
+                "to_translate_y_ratio": 0,
+                "from_opacity": 0,
+                "to_opacity": 1,
+                "duration": 0.28,
+                "delay": 0,
+                "easing": "ease-out"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

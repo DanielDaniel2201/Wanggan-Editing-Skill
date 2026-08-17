@@ -1,22 +1,13 @@
 {
   "schema_version": 1,
   "id": "base",
-  "version": "1.0.0",
-  "extends": [],
+  "version": "1.1.0",
+  "extends": ["foundation"],
+  "selection_rules_mode": "replace",
   "selection_rules": ["selection-rules.md"],
-  "asset_types": [
-    "asset-types/video.json",
-    "asset-types/captions.json",
-    "asset-types/keywords.json",
-    "asset-types/list.json",
-    "asset-types/image.json"
-  ],
-  "effect_types": [
-    "effect-types/scale.json",
-    "effect-types/text-style.json",
-    "effect-types/progressive-reveal.json",
-    "effect-types/pop.json"
-  ],
-  "constraints": ["constraints.json"],
+  "asset_types": [],
+  "effect_types": [],
+  "constraints": [],
+  "patches": ["style-patches.json"],
   "runtime_modules": []
 }

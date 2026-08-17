@@ -1848,10 +1848,20 @@ function channelValueAtTime(effect, time, fromKey, toKey, fallback = 1) {
   if (!effect || time < effect.start || time >= effect.end) return fallback;
   const from = Number(effect[fromKey] ?? fallback);
   const to = Number(effect[toKey] ?? fallback);
-  if (effect.interpolation !== "linear") return to;
+  const easing = effect.easing || effect.interpolation || "linear";
+  if (easing === "step") return to;
   const duration = effect.end - effect.start;
   if (duration <= 0) return fallback;
-  const progress = Math.max(0, Math.min(1, (time - effect.start) / duration));
+  const linearProgress = Math.max(0, Math.min(1, (time - effect.start) / duration));
+  const progress = easing === "ease-in"
+    ? linearProgress ** 2
+    : easing === "ease-out"
+      ? 1 - ((1 - linearProgress) ** 2)
+      : easing === "ease-in-out"
+        ? (linearProgress < 0.5
+          ? 2 * linearProgress * linearProgress
+          : 1 - (((-2 * linearProgress) + 2) ** 2) / 2)
+        : linearProgress;
   return from + (to - from) * progress;
 }
 
@@ -1860,6 +1870,7 @@ function overlayVisualAt(active, time, itemId = null) {
   const applies = (entry) => !entry.item_id || entry.item_id === itemId;
   const scaleStates = [...(effects.scale || []), ...(effects.entryScale || []).filter(applies)];
   const opacityStates = [...(effects.opacity || []).filter(applies), ...(effects.entryOpacity || []).filter(applies)];
+  const translateYStates = (effects.entryTranslateY || []).filter(applies);
   const textStyle = (effects.textStyle || []).find((entry) => (
     applies(entry) && time >= entry.start && time < entry.end
   ));
@@ -1870,6 +1881,15 @@ function overlayVisualAt(active, time, itemId = null) {
     opacity: opacityStates.reduce((value, entry) => (
       value * channelValueAtTime(entry, time, "from_opacity", "to_opacity", 1)
     ), 1),
+    translateYRatio: translateYStates.reduce((value, entry) => (
+      value + channelValueAtTime(
+        entry,
+        time,
+        "from_translate_y_ratio",
+        "to_translate_y_ratio",
+        0,
+      )
+    ), 0),
     fontScale: Number(textStyle?.font_scale || 1),
     color: textStyle?.color || null,
   };
@@ -1993,14 +2013,21 @@ function renderImageOverlay(active, time) {
 }
 
 function applyStructuredEntryAnimation(active, time) {
+  const frameHeight = elements.videoStage.clientHeight;
   for (const itemElement of elements.structuredList.querySelectorAll("[data-item-id]")) {
     const item = active.items.find((candidate) => candidate.id === itemElement.dataset.itemId);
     const visual = overlayVisualAt(active, time, item?.id);
     itemElement.style.opacity = String(visual.opacity);
-    itemElement.style.transform = `scale(${visual.scale})`;
+    itemElement.style.transform = `translateY(${visual.translateYRatio * frameHeight}px) scale(${visual.scale})`;
     itemElement.style.fontSize = `${visual.fontScale}em`;
     itemElement.style.color = visual.color || "";
   }
+}
+
+function colorWithOpacity(color, opacity) {
+  const match = /^#([0-9A-F]{2})([0-9A-F]{2})([0-9A-F]{2})$/i.exec(String(color || ""));
+  if (!match) return "transparent";
+  return `rgba(${parseInt(match[1], 16)}, ${parseInt(match[2], 16)}, ${parseInt(match[3], 16)}, ${Math.max(0, Math.min(1, Number(opacity) || 0))})`;
 }
 
 function renderStructuredOverlay(active, time) {
@@ -2014,6 +2041,7 @@ function renderStructuredOverlay(active, time) {
     return;
   }
   const { box, style } = active;
+  const container = active.container || {};
   const frameWidth = elements.videoStage.clientWidth;
   const frameHeight = elements.videoStage.clientHeight;
   const minDimension = Math.min(frameWidth, frameHeight);
@@ -2025,12 +2053,25 @@ function renderStructuredOverlay(active, time) {
   overlay.style.left = `${(isItems ? 0 : box.x) * 100}%`;
   overlay.style.top = `${(isItems ? 0 : box.y) * 100}%`;
   overlay.style.width = `${(isItems ? 1 : box.width) * 100}%`;
-  overlay.style.height = isItems ? "100%" : "auto";
+  overlay.style.height = isItems ? "100%" : `${box.height * 100}%`;
   overlay.style.fontFamily = `"${style.font_family}", "Microsoft YaHei", sans-serif`;
   overlay.style.fontSize = `${fontSize}px`;
   overlay.style.color = style.color;
   overlay.style.webkitTextStroke = `${strokeWidth}px ${style.stroke_color}`;
   elements.structuredList.style.gap = isItems ? "0" : `${frameHeight * style.item_gap_ratio}px`;
+  elements.structuredList.style.height = isItems ? "100%" : "100%";
+  elements.structuredList.style.padding = isItems
+    ? "0"
+    : `${minDimension * Number(container.padding_ratio || 0)}px`;
+  elements.structuredList.style.backgroundColor = isItems
+    ? "transparent"
+    : colorWithOpacity(container.background_color, container.background_opacity);
+  elements.structuredList.style.border = isItems
+    ? "0"
+    : `${minDimension * Number(container.border_width_ratio || 0)}px solid ${colorWithOpacity(container.border_color, container.border_opacity)}`;
+  elements.structuredList.style.borderRadius = isItems
+    ? "0"
+    : `${minDimension * Number(container.border_radius_ratio || 0)}px`;
   if (overlay.dataset.activeState !== active.id) {
     elements.structuredList.replaceChildren();
     for (const item of active.items) {

@@ -7,6 +7,7 @@ import {
   normalizeBox,
   opacityAtTime,
   scaleAtTime,
+  translateYAtTime,
 } from "../ass.mjs";
 
 function autoItemBoxes(itemCount) {
@@ -74,9 +75,33 @@ function productAt(spans, time, resolver) {
   return (spans || []).reduce((value, span) => value * resolver(span, time), 1);
 }
 
+function sumAt(spans, time, resolver) {
+  return (spans || []).reduce((value, span) => value + resolver(span, time), 0);
+}
+
 function assAlpha(opacity) {
   const alpha = Math.max(0, Math.min(255, Math.round((1 - opacity) * 255)));
   return `&H${alpha.toString(16).padStart(2, "0").toUpperCase()}&`;
+}
+
+function roundedRectPath(left, top, right, bottom, requestedRadius) {
+  const width = Math.max(0, right - left);
+  const height = Math.max(0, bottom - top);
+  const radius = Math.max(0, Math.min(requestedRadius, width / 2, height / 2));
+  if (radius < 1) return `m ${left} ${top} l ${right} ${top} ${right} ${bottom} ${left} ${bottom}`;
+  const control = radius * 0.55228475;
+  const n = (value) => Math.round(value);
+  return [
+    `m ${n(left + radius)} ${n(top)}`,
+    `l ${n(right - radius)} ${n(top)}`,
+    `b ${n(right - radius + control)} ${n(top)} ${n(right)} ${n(top + radius - control)} ${n(right)} ${n(top + radius)}`,
+    `l ${n(right)} ${n(bottom - radius)}`,
+    `b ${n(right)} ${n(bottom - radius + control)} ${n(right - radius + control)} ${n(bottom)} ${n(right - radius)} ${n(bottom)}`,
+    `l ${n(left + radius)} ${n(bottom)}`,
+    `b ${n(left + radius - control)} ${n(bottom)} ${n(left)} ${n(bottom - radius + control)} ${n(left)} ${n(bottom - radius)}`,
+    `l ${n(left)} ${n(top + radius)}`,
+    `b ${n(left)} ${n(top + radius - control)} ${n(left + radius - control)} ${n(top)} ${n(left + radius)} ${n(top)}`,
+  ].join(" ");
 }
 
 function effectSegments(state, item, effects) {
@@ -87,12 +112,19 @@ function effectSegments(state, item, effects) {
     ...(effects.textStyle || []).filter(applies),
     ...(effects.entryScale || []).filter((entry) => entry.target_kind === "asset" || entry.item_id === item.id),
     ...(effects.entryOpacity || []).filter((entry) => entry.target_kind === "asset" || entry.item_id === item.id),
+    ...(effects.entryTranslateY || []).filter((entry) => entry.target_kind === "asset" || entry.item_id === item.id),
   ];
   const boundaries = new Set([state.start, state.end]);
   for (const effect of relevant) {
     if (effect.end <= state.start || effect.start >= state.end) continue;
     boundaries.add(Math.max(state.start, effect.start));
     boundaries.add(Math.min(state.end, effect.end));
+    if (["ease-in", "ease-out", "ease-in-out"].includes(effect.easing)) {
+      for (let step = 1; step < 8; step += 1) {
+        const boundary = effect.start + ((effect.end - effect.start) * step) / 8;
+        if (boundary > state.start && boundary < state.end) boundaries.add(boundary);
+      }
+    }
   }
   const sorted = [...boundaries].sort((left, right) => left - right);
   return sorted.slice(0, -1)
@@ -110,10 +142,13 @@ function visualStyleAt(effects, item, time) {
     ...(effects.opacity || []).filter(applies),
     ...(effects.entryOpacity || []).filter((entry) => entry.target_kind === "asset" || entry.item_id === item.id),
   ];
+  const translateYSpans = (effects.entryTranslateY || [])
+    .filter((entry) => entry.target_kind === "asset" || entry.item_id === item.id);
   const textStyle = activeSpan((effects.textStyle || []).filter(applies), time);
   return {
     scale: productAt(scaleSpans, time, scaleAtTime),
     opacity: productAt(opacitySpans, time, opacityAtTime),
+    translateYRatio: sumAt(translateYSpans, time, translateYAtTime),
     fontScale: Number(textStyle?.font_scale || 1),
     color: textStyle?.color || null,
   };
@@ -127,6 +162,7 @@ export const textGroupRenderer = {
     "style.opacity",
     "transform.scale.entry",
     "style.opacity.entry",
+    "transform.translate-y.entry",
     "style.font-scale",
     "style.color",
   ],
@@ -168,6 +204,7 @@ export const textGroupRenderer = {
         "style.opacity": [],
         "transform.scale.entry": [],
         "style.opacity.entry": [],
+        "transform.translate-y.entry": [],
         "style.font-scale": [],
         "style.color": [],
       },
@@ -179,6 +216,19 @@ export const textGroupRenderer = {
     const fontSize = Math.max(12, Math.round(minDimension * style.font_size_ratio));
     const strokeWidth = Math.max(1, Math.round(minDimension * style.stroke_width_ratio));
     const itemGap = Math.round(project.displayHeight * (style.item_gap_ratio || 0));
+    const container = {
+      background_color: "#000000",
+      background_opacity: 0,
+      border_color: "#000000",
+      border_opacity: 0,
+      border_width_ratio: 0,
+      border_radius_ratio: 0,
+      padding_ratio: 0,
+      ...(resolved.props.container || {}),
+    };
+    const containerPadding = Math.max(0, Math.round(minDimension * Number(container.padding_ratio || 0)));
+    const containerBorderWidth = Math.max(0, Math.round(minDimension * Number(container.border_width_ratio || 0)));
+    const containerRadius = Math.max(0, Math.round(minDimension * Number(container.border_radius_ratio || 0)));
     const lineHeight = Math.max(fontSize, Math.round(fontSize * 1.25));
     const isItems = resolved.layoutMode === "items";
     let fittedBox = resolved.props.box ? { ...resolved.props.box } : { x: 0, y: 0, width: 1, height: 1, unit: "ratio" };
@@ -201,14 +251,16 @@ export const textGroupRenderer = {
         };
       });
     } else {
-      const boxWidth = project.displayWidth * fittedBox.width;
+      const boxWidth = Math.max(1, project.displayWidth * fittedBox.width - containerPadding * 2);
       const maxChars = Math.max(6, Math.floor(boxWidth / fontSize));
       items = resolved.items.map((item) => ({
         ...item,
         lines: splitCaptionLines(item.display_text, maxChars),
       }));
       const lineCount = items.reduce((total, item) => total + item.lines.length, 0);
-      const requiredHeight = lineCount * lineHeight + Math.max(0, items.length - 1) * itemGap;
+      const requiredHeight = lineCount * lineHeight
+        + Math.max(0, items.length - 1) * itemGap
+        + containerPadding * 2;
       const fittedHeight = Math.min(1, requiredHeight / project.displayHeight);
       fittedBox = {
         ...fittedBox,
@@ -219,13 +271,17 @@ export const textGroupRenderer = {
 
     const visibility = resolved.channels["visibility.items"] || [];
     const popEntries = resolved.channels["transform.scale.entry"] || [];
+    const translateEntries = resolved.channels["transform.translate-y.entry"] || [];
     const hasPop = popEntries.length > 0;
+    const hasTranslateEntry = translateEntries.length > 0;
+    const enterAnimation = hasPop ? "pop" : hasTranslateEntry ? "translate-opacity" : "none";
     const effects = {
       scale: resolved.channels["transform.scale"] || [],
       opacity: resolved.channels["style.opacity"] || [],
       textStyle: resolved.styleSpans || [],
       entryScale: resolved.channels["transform.scale.entry"] || [],
       entryOpacity: resolved.channels["style.opacity.entry"] || [],
+      entryTranslateY: resolved.channels["transform.translate-y.entry"] || [],
     };
     const baseStates = [];
     if (resolved.enabled) {
@@ -234,14 +290,17 @@ export const textGroupRenderer = {
           const visibleItems = items.filter((item) => slice.visible_item_ids.includes(item.id));
           const entering = items.find((item) => item.id === slice.entering_item_id);
           const pop = popEntries.find((entry) => entry.item_id === slice.entering_item_id);
+          const translate = translateEntries.find((entry) => entry.item_id === slice.entering_item_id);
           baseStates.push({
             id: `${resolved.id}-state-${String(baseStates.length + 1).padStart(3, "0")}`,
             overlay_id: resolved.id,
             layout_mode: resolved.layoutMode,
             layout: resolved.layout,
-            enter_animation: hasPop ? "pop" : "none",
+            enter_animation: enterAnimation,
             entering_item_id: slice.entering_item_id,
-            animation_duration: pop?.duration || Math.max(0.001, Math.min(0.18, slice.end - (entering?.start ?? slice.start))),
+            animation_duration: pop?.duration
+              || translate?.duration
+              || Math.max(0.001, Math.min(0.18, slice.end - (entering?.start ?? slice.start))),
             start: slice.start,
             end: slice.end,
             box: fittedBox,
@@ -250,6 +309,7 @@ export const textGroupRenderer = {
             strokeWidth,
             itemGap: isItems ? 0 : itemGap,
             lineHeight,
+            container,
             items: visibleItems,
             effects,
           });
@@ -271,6 +331,7 @@ export const textGroupRenderer = {
           strokeWidth,
           itemGap: isItems ? 0 : itemGap,
           lineHeight,
+          container,
           items,
           effects,
         });
@@ -290,6 +351,33 @@ export const textGroupRenderer = {
       const events = [];
       const styleFontName = String(state.style.font_family).replace(/[,{}\\]/g, " ");
       const outline = assStrokeWidth(project, state.style.stroke_width_ratio);
+      if (
+        state.layout_mode === "flow"
+        && (Number(state.container.background_opacity) > 0 || containerBorderWidth > 0)
+      ) {
+        const left = Math.round(project.displayWidth * state.box.x);
+        const top = Math.round(project.displayHeight * state.box.y);
+        const right = Math.round(project.displayWidth * (state.box.x + state.box.width));
+        const bottom = Math.round(project.displayHeight * (state.box.y + state.box.height));
+        const shape = roundedRectPath(left, top, right, bottom, containerRadius);
+        const tags = [
+          "\\an7",
+          "\\pos(0,0)",
+          "\\p1",
+          `\\c${assColor(state.container.background_color)}`,
+          `\\1a${assAlpha(state.container.background_opacity)}`,
+          `\\3c${assColor(state.container.border_color)}`,
+          `\\3a${assAlpha(state.container.border_opacity)}`,
+          `\\bord${containerBorderWidth}`,
+          "\\shad0",
+        ].join("");
+        events.push({
+          layer: 9,
+          start: state.start,
+          end: state.end,
+          text: `{${tags}}${shape}{\\p0}`,
+        });
+      }
       if (state.layout_mode === "items") {
         for (const item of state.items) {
           const centerX = Math.round(project.displayWidth * (item.box.x + item.box.width / 2));
@@ -300,9 +388,13 @@ export const textGroupRenderer = {
             const duration = Math.max(1, Math.round((segment.end - segment.start) * 1000));
             const startScale = Math.round(startStyle.scale * 100);
             const endScale = Math.round(endStyle.scale * 100);
+            const startY = Math.round(centerY + project.displayHeight * startStyle.translateYRatio);
+            const endY = Math.round(centerY + project.displayHeight * endStyle.translateYRatio);
             const tags = [
               "\\an5",
-              `\\pos(${centerX},${centerY})`,
+              startY !== endY
+                ? `\\move(${centerX},${startY},${centerX},${endY},0,${duration})`
+                : `\\pos(${centerX},${startY})`,
               `\\fn${styleFontName}`,
               `\\fs${Math.max(1, Math.round(state.fontSize * startStyle.fontScale))}`,
               `\\c${assColor(startStyle.color || state.style.color)}`,
@@ -324,8 +416,8 @@ export const textGroupRenderer = {
         }
         return events;
       }
-      const leftX = Math.round(project.displayWidth * state.box.x);
-      let topY = Math.round(project.displayHeight * state.box.y);
+      const leftX = Math.round(project.displayWidth * state.box.x) + containerPadding;
+      let topY = Math.round(project.displayHeight * state.box.y) + containerPadding;
       for (const item of state.items) {
         for (const line of item.lines) {
           for (const segment of effectSegments(state, item, state.effects)) {
@@ -334,9 +426,13 @@ export const textGroupRenderer = {
             const duration = Math.max(1, Math.round((segment.end - segment.start) * 1000));
             const startScale = Math.round(startStyle.scale * 100);
             const endScale = Math.round(endStyle.scale * 100);
+            const startY = Math.round(topY + project.displayHeight * startStyle.translateYRatio);
+            const endY = Math.round(topY + project.displayHeight * endStyle.translateYRatio);
             const tags = [
               "\\an7",
-              `\\pos(${leftX},${topY})`,
+              startY !== endY
+                ? `\\move(${leftX},${startY},${leftX},${endY},0,${duration})`
+                : `\\pos(${leftX},${startY})`,
               `\\fn${styleFontName}`,
               `\\fs${Math.max(1, Math.round(state.fontSize * startStyle.fontScale))}`,
               `\\c${assColor(startStyle.color || state.style.color)}`,
@@ -377,6 +473,7 @@ export const textGroupRenderer = {
       strokeWidth,
       itemGap: isItems ? 0 : itemGap,
       lineHeight,
+      container,
       requiredHeight: isItems ? items[0]?.requiredHeight : fittedBox.height * project.displayHeight,
       states,
       assEvents,
@@ -386,7 +483,7 @@ export const textGroupRenderer = {
         enabled: resolved.enabled,
         layout: resolved.layout,
         layout_mode: resolved.layoutMode,
-        enter_animation: hasPop ? "pop" : "none",
+        enter_animation: enterAnimation,
         box: fittedBox,
         style,
         items,
@@ -394,9 +491,12 @@ export const textGroupRenderer = {
         strokeWidth,
         itemGap: isItems ? 0 : itemGap,
         lineHeight,
+        container,
         requiredHeight: isItems
           ? undefined
-          : items.reduce((total, item) => total + item.lines.length, 0) * lineHeight + Math.max(0, items.length - 1) * itemGap,
+          : items.reduce((total, item) => total + item.lines.length, 0) * lineHeight
+            + Math.max(0, items.length - 1) * itemGap
+            + containerPadding * 2,
         source: resolved.origin.created_by === "human" ? "human" : "ai",
         human_modified: resolved.origin.human_modified,
         effects,

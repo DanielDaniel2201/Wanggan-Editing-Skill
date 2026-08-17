@@ -15,6 +15,15 @@ assert.ok(base.assetTypes.has("base.video"));
 assert.ok(base.assetTypes.has("base.keywords"));
 assert.ok(base.effectTypes.has("base.scale"));
 assert.ok(base.effectTypes.has("base.text-style"));
+assert.ok(base.effectTypes.has("base.item-enter"));
+assert.deepEqual(base.extends, ["foundation"]);
+assert.equal(base.selectionRules.length, 1);
+assert.equal(base.assetTypes.get("base.list").defaults.props.container.background_opacity, 0.82);
+const foundation = await loadProfile("foundation");
+assert.equal(foundation.id, "foundation");
+assert.equal(foundation.selectionRules.length, 0);
+assert.equal(foundation.assetTypes.get("base.list").defaults.props.container.background_opacity, 0);
+assert.equal(foundation.assetTypes.get("base.keywords").defaults.props.style.color, "#FFFFFF");
 assert.ok(base.digest.startsWith("sha256:"));
 const again = await loadProfile("base");
 assert.equal(again.digest, base.digest);
@@ -97,6 +106,37 @@ assert.equal(allowed.id, "coded");
 const preflight = await loadProfile(codeDir, { loadRuntime: false });
 assert.equal(preflight.hasRuntimeCode, true);
 
+const patchedDir = fs.mkdtempSync(path.join(os.tmpdir(), "wanggan-patched-profile-"));
+fs.mkdirSync(path.join(patchedDir, "rules"));
+fs.writeFileSync(path.join(patchedDir, "rules/selection.md"), "# 我的 IP 规则\n");
+writeJson(path.join(patchedDir, "profile.json"), {
+  schema_version: 1,
+  id: "patched",
+  version: "1.0.0",
+  extends: ["base"],
+  selection_rules_mode: "replace",
+  selection_rules: ["rules/selection.md"],
+  asset_types: [],
+  effect_types: [],
+  constraints: [],
+  patches: ["patches.json"],
+  runtime_modules: [],
+});
+writeJson(path.join(patchedDir, "patches.json"), {
+  schema_version: 1,
+  patches: [{
+    kind: "asset_type",
+    id: "base.list",
+    changes: { defaults: { props: { style: { color: "#22CC88" } } } },
+  }],
+});
+const patched = await loadProfile(patchedDir);
+assert.equal(patched.selectionRules.length, 1);
+assert.match(patched.selectionRules[0].text, /我的 IP/);
+assert.equal(patched.assetTypes.get("base.list").defaults.props.style.color, "#22CC88");
+assert.equal(patched.assetTypes.get("base.list").defaults.props.style.font_family, "Microsoft YaHei");
+assert.equal(patched.assetTypes.get("base.list").defaults.props.container.background_opacity, 0.82);
+
 const badChannelsDir = fs.mkdtempSync(path.join(os.tmpdir(), "wanggan-bad-channels-"));
 fs.mkdirSync(path.join(badChannelsDir, "effect-types"));
 writeJson(path.join(badChannelsDir, "profile.json"), {
@@ -133,5 +173,6 @@ fs.rmSync(dupDir, { recursive: true, force: true });
 fs.rmSync(escapeDir, { recursive: true, force: true });
 fs.rmSync(codeDir, { recursive: true, force: true });
 fs.rmSync(badChannelsDir, { recursive: true, force: true });
+fs.rmSync(patchedDir, { recursive: true, force: true });
 
 process.stdout.write("wanggan profile tests passed\n");

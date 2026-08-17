@@ -26,4 +26,6 @@
 
 Renderer 必须声明 `supportedChannels`。Profile Loader 会验证所有通过 capability 匹配的 Effect，其 `writes_channels` 都能被该 renderer 消费；不允许声明后静默丢弃。
 
-Base 注册的类型：`base.video`、`base.captions`、`base.keywords`、`base.list`、`base.image`。
+Foundation 注册稳定的 v3 类型：`base.video`、`base.captions`、`base.keywords`、`base.list`、`base.image`。`base.*` namespace 为兼容已有 Composition 保留；Base Profile 只通过字段 patch 注入示例样式和默认行为。
+
+`base.list` 额外暴露 `container.style` 与 `transform.translate-y` capability。容器背景、边框、圆角和 padding 属于 Asset props；位移/透明度动画由 Effect channel 驱动。

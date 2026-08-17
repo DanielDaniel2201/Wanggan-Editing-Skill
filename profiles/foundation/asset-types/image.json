@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "kind": "asset_type",
+  "id": "base.image",
+  "renderer": "core.image",
+  "source_kinds": ["input.image"],
+  "capabilities": ["visual", "media.image", "layout.box", "transform.scale", "style.opacity"],
+  "default_layer": 200,
+  "defaults": {
+    "enabled": true,
+    "source": { "kind": "agent-generated" },
+    "props": {
+      "fit": "contain",
+      "box": { "x": 0.58, "y": 0.08, "width": 0.34, "height": 0.28, "unit": "ratio" }
+    }
+  },
+  "instance_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["image_path"],
+    "properties": {
+      "image_path": { "type": "string", "minLength": 1 },
+      "fit": { "const": "contain" },
+      "box": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["x", "y", "width", "height"],
+        "properties": {
+          "x": { "type": "number", "minimum": 0, "maximum": 1 },
+          "y": { "type": "number", "minimum": 0, "maximum": 1 },
+          "width": { "type": "number", "minimum": 0.05, "maximum": 1 },
+          "height": { "type": "number", "minimum": 0.05, "maximum": 1 },
+          "unit": { "const": "ratio" }
+        }
+      }
+    }
+  },
+  "ui": {
+    "label": "贴图",
+    "selectable": true,
+    "create_from_selection": true,
+    "create_label": "新建贴图",
+    "prompt_path": true
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "kind": "effect_type",
+  "id": "base.item-enter",
+  "operator": "core.transition.translate-opacity",
+  "requires_capabilities": ["transform.translate-y", "style.opacity"],
+  "timing_models": ["item_enter", "asset_enter"],
+  "writes_channels": ["transform.translate-y.entry", "style.opacity.entry"],
+  "overlap_policy": "exclusive-per-channel",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "from_translate_y_ratio", "to_translate_y_ratio", "from_opacity",
+      "to_opacity", "duration", "easing"
+    ],
+    "properties": {
+      "from_translate_y_ratio": { "type": "number", "minimum": -0.25, "maximum": 0.25 },
+      "to_translate_y_ratio": { "type": "number", "minimum": -0.25, "maximum": 0.25 },
+      "from_opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+      "to_opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+      "duration": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 },
+      "delay": { "type": "number", "minimum": 0, "maximum": 2 },
+      "easing": { "enum": ["linear", "ease-in", "ease-out", "ease-in-out"] }
+    }
+  },
+  "ui": {
+    "label": "位移淡入",
+    "toggle_label": "条目入场",
+    "presets": [
+      {
+        "id": "up-fade",
+        "label": "向上淡入",
+        "config": {
+          "from_translate_y_ratio": 0.035,
+          "to_translate_y_ratio": 0,
+          "from_opacity": 0,
+          "to_opacity": 1,
+          "duration": 0.28,
+          "delay": 0,
+          "easing": "ease-out"
+        }
+      }
+    ]
+  }
+}

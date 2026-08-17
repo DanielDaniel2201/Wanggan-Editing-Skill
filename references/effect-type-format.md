@@ -23,4 +23,6 @@
 - `ui.preferred_target_source` 可指定系统 Asset 的优先来源；当前时间范围内已有兼容 Overlay 时优先作用于该 Overlay
 - 审查页的逐字选择按钮只显示支持 `word_range` 的 Effect；其他时间模型通过 Asset 编辑器或 Composition 创建
 
-Base 注册的类型：`base.scale`、`base.text-style`、`base.progressive-reveal`、`base.pop`。
+Foundation 注册的类型：`base.scale`、`base.text-style`、`base.opacity`、`base.progressive-reveal`、`base.pop`、`base.item-enter`。
+
+`base.item-enter` 使用 `core.transition.translate-opacity`，写入 `transform.translate-y.entry` 与 `style.opacity.entry`。其位移、透明度、duration、delay 和 easing 全部来自 config；浏览器和 ASS 导出必须同时消费这两个 channel。
