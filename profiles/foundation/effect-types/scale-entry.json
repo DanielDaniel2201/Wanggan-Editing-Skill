@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "kind": "effect_type",
+  "id": "base.scale-entry",
+  "operator": "core.transition.scale",
+  "requires_capabilities": ["transform.scale-entry"],
+  "uses_primitives": ["base.transform.scale-entry"],
+  "timing_models": ["item_enter", "asset_enter"],
+  "writes_channels": ["transform.scale.entry"],
+  "overlap_policy": "exclusive-per-channel",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["from_scale", "to_scale", "duration", "easing"],
+    "properties": {
+      "from_scale": { "type": "number", "exclusiveMinimum": 0 },
+      "to_scale": { "type": "number", "exclusiveMinimum": 0 },
+      "duration": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 },
+      "delay": { "type": "number", "minimum": 0, "maximum": 2 },
+      "easing": { "enum": ["linear", "ease-in", "ease-out", "ease-in-out"] }
+    }
+  },
+  "ui": { "label": "缩放入场", "atomic": true }
+}

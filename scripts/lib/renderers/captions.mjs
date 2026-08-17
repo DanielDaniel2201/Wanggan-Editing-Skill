@@ -31,6 +31,14 @@ function suppressCaptionCues(cues, words, suppressionRanges) {
 
 export const captionsRenderer = {
   id: "core.captions",
+  supportedAssetProps: [
+    "box",
+    "style.font_family",
+    "style.font_size_ratio",
+    "style.color",
+    "style.stroke_color",
+    "style.stroke_width_ratio",
+  ],
   supportedChannels: ["style.font-scale", "style.color"],
   supportsSuppression: true,
   resolve({ asset, typeDef, project }) {

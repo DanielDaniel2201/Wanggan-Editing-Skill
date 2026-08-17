@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "primitives": [
+    {
+      "id": "base.visibility.item-sequence",
+      "category": "visibility",
+      "capability": "ordered-items",
+      "channels": ["visibility.items"],
+      "description": "按条目时间控制出现、累积和保留"
+    }
+  ]
+}

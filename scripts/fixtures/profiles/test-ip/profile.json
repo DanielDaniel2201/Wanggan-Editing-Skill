@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "extends": ["base"],
   "selection_rules": ["selection-rules.md"],
-  "asset_types": [],
+  "asset_types": ["asset-types/card.json"],
   "effect_types": ["effect-types/test-fade.json"],
   "constraints": [],
   "runtime_modules": []

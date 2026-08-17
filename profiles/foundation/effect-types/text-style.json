@@ -4,6 +4,7 @@
   "id": "base.text-style",
   "operator": "core.style.text",
   "requires_capabilities": ["text.style"],
+  "uses_primitives": ["base.typography.font-scale", "base.typography.color"],
   "timing_models": ["word_range", "cue", "item"],
   "writes_channels": ["style.font-scale", "style.color"],
   "overlap_policy": "exclusive-per-channel",

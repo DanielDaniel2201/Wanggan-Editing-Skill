@@ -5,6 +5,15 @@
   "renderer": "core.captions",
   "source_kinds": ["input.captions"],
   "capabilities": ["visual", "text.cues", "text.style", "layout.box"],
+  "uses_primitives": [
+    "base.layout.box",
+    "base.typography.font-family",
+    "base.typography.font-size",
+    "base.typography.font-scale",
+    "base.typography.color",
+    "base.typography.stroke-color",
+    "base.typography.stroke-width"
+  ],
   "default_layer": 300,
   "system_instance": {
     "id": "captions.main",

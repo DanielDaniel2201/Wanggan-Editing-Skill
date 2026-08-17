@@ -6,6 +6,7 @@ import { collectSuppressionRanges } from "./constraints.mjs";
 import { mergedTimeRanges, resolveEffectTiming } from "./timeline.mjs";
 import { buildAssDocument } from "./ass.mjs";
 import { loadProjectContext } from "./project.mjs";
+import { expandEffectInstance } from "./profile-loader.mjs";
 
 const PHASE_ORDER = ["visibility", "layout", "transform", "style", "entry", "composite"];
 
@@ -42,7 +43,8 @@ export async function compileProject(projectInput, options = {}) {
   });
   const resolvedById = new Map(resolvedAssets.map((asset) => [asset.id, asset]));
 
-  for (const effect of sortEffects(composition.effects, profile)) {
+  const executableEffects = composition.effects.flatMap((effect) => expandEffectInstance(effect, profile));
+  for (const effect of sortEffects(executableEffects, profile)) {
     const typeDef = profile.effectTypes.get(effect.type);
     const operator = profile.registry.getOperator(typeDef.operator);
     const target = resolvedById.get(effect.target.asset_id);

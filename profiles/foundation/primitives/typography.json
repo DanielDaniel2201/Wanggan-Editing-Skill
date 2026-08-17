@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "primitives": [
+    {
+      "id": "base.typography.font-family",
+      "category": "typography",
+      "capability": "text.style",
+      "asset_props": ["style.font_family"],
+      "description": "字体族"
+    },
+    {
+      "id": "base.typography.font-size",
+      "category": "typography",
+      "capability": "text.style",
+      "asset_props": ["style.font_size_ratio"],
+      "description": "相对画面尺寸的基础字号"
+    },
+    {
+      "id": "base.typography.font-scale",
+      "category": "typography",
+      "capability": "text.style",
+      "channels": ["style.font-scale"],
+      "description": "时间区间内的字号倍率"
+    },
+    {
+      "id": "base.typography.color",
+      "category": "typography",
+      "capability": "text.style",
+      "channels": ["style.color"],
+      "asset_props": ["style.color"],
+      "description": "文字颜色"
+    },
+    {
+      "id": "base.typography.stroke-color",
+      "category": "typography",
+      "capability": "text.style",
+      "asset_props": ["style.stroke_color"],
+      "description": "文字描边颜色"
+    },
+    {
+      "id": "base.typography.stroke-width",
+      "category": "typography",
+      "capability": "text.style",
+      "asset_props": ["style.stroke_width_ratio"],
+      "description": "文字描边宽度"
+    }
+  ]
+}

@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "id": "base",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "extends": ["foundation"],
   "selection_rules_mode": "replace",
   "selection_rules": ["selection-rules.md"],
   "asset_types": [],
-  "effect_types": [],
+  "effect_types": ["effect-types/pop.json", "effect-types/item-enter.json"],
   "constraints": [],
   "patches": ["style-patches.json"],
   "runtime_modules": []

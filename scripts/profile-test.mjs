@@ -16,6 +16,12 @@ assert.ok(base.assetTypes.has("base.keywords"));
 assert.ok(base.effectTypes.has("base.scale"));
 assert.ok(base.effectTypes.has("base.text-style"));
 assert.ok(base.effectTypes.has("base.item-enter"));
+assert.ok(base.primitiveTypes.has("base.transform.translate-y"));
+assert.ok(base.primitiveTypes.has("base.container.background-color"));
+assert.deepEqual(
+  base.effectTypes.get("base.item-enter").composes.map((item) => item.effect_type),
+  ["base.translate-y-entry", "base.opacity-entry"],
+);
 assert.deepEqual(base.extends, ["foundation"]);
 assert.equal(base.selectionRules.length, 1);
 assert.equal(base.assetTypes.get("base.list").defaults.props.container.background_opacity, 0.82);
@@ -31,6 +37,9 @@ assert.equal(again.digest, base.digest);
 const extended = await loadProfile(testIp);
 assert.equal(extended.id, "test-ip");
 assert.ok(extended.assetTypes.has("base.video"));
+assert.ok(extended.assetTypes.has("test-ip.card"));
+assert.equal(extended.assetTypes.get("test-ip.card").renderer, "core.text-group");
+assert.ok(extended.assetTypes.get("test-ip.card").uses_primitives.includes("base.container.background-color"));
 assert.ok(extended.effectTypes.has("base.scale"));
 assert.ok(extended.effectTypes.has("test-ip.fade"));
 assert.equal(extended.effectTypes.get("test-ip.fade").operator, "core.style.opacity");
@@ -68,6 +77,7 @@ writeJson(path.join(dupDir, "effect-types/scale.json"), {
   id: "base.scale",
   operator: "core.transform.scale",
   requires_capabilities: ["transform.scale"],
+  uses_primitives: ["base.transform.scale"],
   writes_channels: ["transform.scale"],
   config_schema: { type: "object" },
 });
@@ -156,6 +166,7 @@ writeJson(path.join(badChannelsDir, "effect-types/broken.json"), {
   id: "bad-channels.broken",
   operator: "core.style.opacity",
   requires_capabilities: ["style.opacity"],
+  uses_primitives: ["base.visual.opacity"],
   timing_models: ["word_range"],
   writes_channels: ["transform.scale"],
   config_schema: { type: "object" },

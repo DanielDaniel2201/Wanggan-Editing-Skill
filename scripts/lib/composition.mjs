@@ -4,6 +4,7 @@ import { WangganError, deepClone, deepMerge, readJson, writeJson } from "./core.
 import { assertSchema } from "./schema.mjs";
 import { resolveWordRange, validateEffectTiming } from "./timeline.mjs";
 import { evaluateConstraints, lifecycleRange } from "./constraints.mjs";
+import { expandEffectInstance } from "./profile-loader.mjs";
 
 const FONT_ALIASES = new Map([
   ["Noto Sans SC", "Microsoft YaHei"],
@@ -180,6 +181,7 @@ export function validateComposition(value, profile, words, project = null) {
       project?.inputs?.captions?.cues || [],
     );
     assertSchema(typeDef.configValidator, effect.config, `Effect ${effect.id} config`);
+    expandEffectInstance(effect, profile);
     effects.push(effect);
   }
 

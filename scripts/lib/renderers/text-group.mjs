@@ -156,6 +156,24 @@ function visualStyleAt(effects, item, time) {
 
 export const textGroupRenderer = {
   id: "core.text-group",
+  supportedAssetProps: [
+    "box",
+    "layout",
+    "items",
+    "style.font_family",
+    "style.font_size_ratio",
+    "style.color",
+    "style.stroke_color",
+    "style.stroke_width_ratio",
+    "style.item_gap_ratio",
+    "container.background_color",
+    "container.background_opacity",
+    "container.border_color",
+    "container.border_opacity",
+    "container.border_width_ratio",
+    "container.border_radius_ratio",
+    "container.padding_ratio",
+  ],
   supportedChannels: [
     "visibility.items",
     "transform.scale",

@@ -2,11 +2,35 @@
   "schema_version": 1,
   "kind": "effect_type",
   "id": "base.pop",
-  "operator": "core.transition.scale-opacity",
-  "requires_capabilities": ["transform.scale", "style.opacity"],
+  "requires_capabilities": ["transform.scale-entry", "style.opacity"],
+  "uses_primitives": ["base.transform.scale-entry", "base.visual.opacity"],
   "timing_models": ["item_enter", "asset_enter"],
   "writes_channels": ["transform.scale.entry", "style.opacity.entry"],
   "overlap_policy": "exclusive-per-channel",
+  "composes": [
+    {
+      "id": "scale",
+      "effect_type": "base.scale-entry",
+      "config": {
+        "from_scale": 0.85,
+        "to_scale": 1,
+        "duration": 0.18,
+        "delay": 0,
+        "easing": "linear"
+      }
+    },
+    {
+      "id": "opacity",
+      "effect_type": "base.opacity-entry",
+      "config": {
+        "from_opacity": 0,
+        "to_opacity": 1,
+        "duration": 0.18,
+        "delay": 0,
+        "easing": "linear"
+      }
+    }
+  ],
   "config_schema": {
     "type": "object",
     "additionalProperties": false

@@ -4,6 +4,7 @@
   "id": "base.scale",
   "operator": "core.transform.scale",
   "requires_capabilities": ["transform.scale"],
+  "uses_primitives": ["base.transform.scale"],
   "timing_models": ["word_range"],
   "writes_channels": ["transform.scale"],
   "overlap_policy": "exclusive-per-channel",

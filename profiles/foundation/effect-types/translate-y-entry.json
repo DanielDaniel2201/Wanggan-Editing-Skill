@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "kind": "effect_type",
+  "id": "base.translate-y-entry",
+  "operator": "core.transition.translate-y",
+  "requires_capabilities": ["transform.translate-y"],
+  "uses_primitives": ["base.transform.translate-y"],
+  "timing_models": ["item_enter", "asset_enter"],
+  "writes_channels": ["transform.translate-y.entry"],
+  "overlap_policy": "exclusive-per-channel",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["from_translate_y_ratio", "to_translate_y_ratio", "duration", "easing"],
+    "properties": {
+      "from_translate_y_ratio": { "type": "number", "minimum": -0.25, "maximum": 0.25 },
+      "to_translate_y_ratio": { "type": "number", "minimum": -0.25, "maximum": 0.25 },
+      "duration": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 },
+      "delay": { "type": "number", "minimum": 0, "maximum": 2 },
+      "easing": { "enum": ["linear", "ease-in", "ease-out", "ease-in-out"] }
+    }
+  },
+  "ui": { "label": "垂直位移入场", "atomic": true }
+}

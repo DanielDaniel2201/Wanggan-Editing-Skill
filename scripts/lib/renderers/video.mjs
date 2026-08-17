@@ -2,6 +2,7 @@ import { mergeAdjacentScaleStates } from "../ass.mjs";
 
 export const videoRenderer = {
   id: "core.video",
+  supportedAssetProps: [],
   supportedChannels: ["transform.scale"],
   supportsSuppression: false,
   resolve({ asset, typeDef, words, project }) {

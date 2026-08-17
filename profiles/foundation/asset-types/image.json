@@ -4,7 +4,8 @@
   "id": "base.image",
   "renderer": "core.image",
   "source_kinds": ["input.image"],
-  "capabilities": ["visual", "media.image", "layout.box", "transform.scale", "style.opacity"],
+  "capabilities": ["visual", "media.image", "layout.box", "transform.scale", "transform.scale-entry", "style.opacity"],
+  "uses_primitives": ["base.layout.box", "base.transform.scale", "base.transform.scale-entry", "base.visual.opacity"],
   "default_layer": 200,
   "defaults": {
     "enabled": true,

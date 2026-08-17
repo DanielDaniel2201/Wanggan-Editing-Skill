@@ -5,7 +5,7 @@ import path from "node:path";
 import { compileProject } from "./lib/compiler.mjs";
 import { emptyComposition, validateComposition } from "./lib/composition.mjs";
 import { validateTranscript, writeJson } from "./lib/core.mjs";
-import { loadProfile } from "./lib/profile-loader.mjs";
+import { expandEffectInstance, loadProfile } from "./lib/profile-loader.mjs";
 
 const words = validateTranscript([
   { text: "第一", start: 0.1, end: 0.3 },
@@ -22,50 +22,20 @@ const project = {
   duration: 1.4,
   inputs: { captions: { path: "input.srt", cues: [] } },
 };
-const scenarios = [
-  {
-    id: "minimal-knowledge",
-    container: {
-      background_color: "#FFFFFF",
-      background_opacity: 0.94,
-      border_color: "#111111",
-      border_opacity: 0,
-      border_width_ratio: 0,
-      border_radius_ratio: 0.01,
-      padding_ratio: 0.016,
-    },
-    textColor: "#111111",
-    entry: null,
+const scenarios = [{
+  id: "primitive-contract",
+  container: {
+    background_color: "#10243A",
+    background_opacity: 0.9,
+    border_color: "#6B8299",
+    border_opacity: 0.5,
+    border_width_ratio: 0.001,
+    border_radius_ratio: 0.006,
+    padding_ratio: 0.018,
   },
-  {
-    id: "energetic",
-    container: {
-      background_color: "#E11D48",
-      background_opacity: 0.88,
-      border_color: "#FFFFFF",
-      border_opacity: 0.3,
-      border_width_ratio: 0.002,
-      border_radius_ratio: 0.022,
-      padding_ratio: 0.02,
-    },
-    textColor: "#FFFFFF",
-    entry: { from_translate_y_ratio: 0.05, to_translate_y_ratio: 0, from_opacity: 0, to_opacity: 1, duration: 0.22, delay: 0, easing: "ease-out" },
-  },
-  {
-    id: "serious-business",
-    container: {
-      background_color: "#10243A",
-      background_opacity: 0.9,
-      border_color: "#6B8299",
-      border_opacity: 0.5,
-      border_width_ratio: 0.001,
-      border_radius_ratio: 0.006,
-      padding_ratio: 0.018,
-    },
-    textColor: "#E8EEF4",
-    entry: { from_translate_y_ratio: 0.015, to_translate_y_ratio: 0, from_opacity: 0, to_opacity: 1, duration: 0.42, delay: 0, easing: "linear" },
-  },
-];
+  textColor: "#E8EEF4",
+  entry: { from_translate_y_ratio: 0.015, to_translate_y_ratio: 0, from_opacity: 0, to_opacity: 1, duration: 0.42, delay: 0, easing: "linear" },
+}];
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "wanggan-foundation-profiles-"));
 try {
@@ -78,7 +48,7 @@ try {
       schema_version: 1,
       id: scenario.id,
       version: "1.0.0",
-      extends: ["foundation"],
+      extends: ["base"],
       selection_rules_mode: "replace",
       selection_rules: ["selection-rules.md"],
       asset_types: [],
@@ -99,6 +69,12 @@ try {
     });
     const profile = await loadProfile(profileDir);
     assert.equal(profile.hasRuntimeCode, false);
+    assert.ok(profile.primitiveTypes.has("base.transform.translate-y"));
+    assert.ok(profile.primitiveTypes.has("base.container.background-color"));
+    assert.deepEqual(
+      profile.effectTypes.get("base.item-enter").composes.map((item) => item.effect_type),
+      ["base.translate-y-entry", "base.opacity-entry"],
+    );
     assert.equal(profile.assetTypes.get("base.list").renderer, "core.text-group");
     assert.equal(profile.selectionRules.length, 1);
     const composition = emptyComposition(profile);
@@ -135,6 +111,12 @@ try {
       });
     }
     const normalized = validateComposition(composition, profile, words, project);
+    assert.equal(normalized.effects.filter((item) => item.type === "base.item-enter").length, 1);
+    assert.deepEqual(
+      expandEffectInstance(normalized.effects.find((item) => item.type === "base.item-enter"), profile)
+        .map((item) => item.type),
+      ["base.translate-y-entry", "base.opacity-entry"],
+    );
     const ir = await compileProject(project, {
       context: { project, profile, words, captionCues: [], lockStatus: { ok: true, changes: [] } },
       composition: normalized,
@@ -153,7 +135,7 @@ try {
     results.push({ id: scenario.id, assText: ir.assText });
   }
   assert.equal(new Set(results.map((item) => item.assText)).size, scenarios.length);
-  process.stdout.write("wanggan foundation profile tests passed\n");
+  process.stdout.write("wanggan foundation primitive tests passed\n");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

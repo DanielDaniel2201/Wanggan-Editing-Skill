@@ -6,7 +6,21 @@
   "source_kinds": ["agent-generated"],
   "capabilities": [
     "visual", "text.items", "ordered-items", "text.style", "layout.items",
-    "transform.scale", "transform.translate-y", "style.opacity"
+    "transform.scale", "transform.scale-entry", "transform.translate-y", "style.opacity"
+  ],
+  "uses_primitives": [
+    "base.layout.items",
+    "base.transform.scale",
+    "base.transform.scale-entry",
+    "base.transform.translate-y",
+    "base.visual.opacity",
+    "base.visibility.item-sequence",
+    "base.typography.font-family",
+    "base.typography.font-size",
+    "base.typography.font-scale",
+    "base.typography.color",
+    "base.typography.stroke-color",
+    "base.typography.stroke-width"
   ],
   "default_layer": 400,
   "defaults": {

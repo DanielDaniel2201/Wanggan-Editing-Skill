@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "primitives": [
+    {
+      "id": "base.transform.scale",
+      "category": "transform",
+      "capability": "transform.scale",
+      "channels": ["transform.scale"],
+      "description": "时间区间内的统一缩放"
+    },
+    {
+      "id": "base.transform.scale-entry",
+      "category": "transform",
+      "capability": "transform.scale-entry",
+      "channels": ["transform.scale.entry"],
+      "description": "Asset 或条目入场缩放"
+    },
+    {
+      "id": "base.transform.translate-y",
+      "category": "transform",
+      "capability": "transform.translate-y",
+      "channels": ["transform.translate-y.entry"],
+      "description": "垂直位移，使用画面高度比例作为单位"
+    }
+  ]
+}

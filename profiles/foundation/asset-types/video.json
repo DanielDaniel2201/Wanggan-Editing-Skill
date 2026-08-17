@@ -5,6 +5,7 @@
   "renderer": "core.video",
   "source_kinds": ["input.video"],
   "capabilities": ["visual", "transform.scale"],
+  "uses_primitives": ["base.transform.scale"],
   "default_layer": 0,
   "system_instance": {
     "id": "video.main",

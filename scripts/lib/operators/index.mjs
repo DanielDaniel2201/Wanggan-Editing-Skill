@@ -1,17 +1,17 @@
 import { scaleOperator } from "./scale.mjs";
 import { textStyleOperator } from "./text-style.mjs";
 import { progressiveRevealOperator } from "./progressive-reveal.mjs";
-import { popOperator } from "./pop.mjs";
 import { opacityOperator } from "./opacity.mjs";
-import { translateOpacityOperator } from "./translate-opacity.mjs";
+import { opacityEntryOperator, scaleEntryOperator, translateYEntryOperator } from "./entry-transition.mjs";
 
 const OPERATORS = [
   scaleOperator,
   textStyleOperator,
   progressiveRevealOperator,
-  popOperator,
   opacityOperator,
-  translateOpacityOperator,
+  scaleEntryOperator,
+  translateYEntryOperator,
+  opacityEntryOperator,
 ];
 
 export function registerBuiltinOperators(registry) {

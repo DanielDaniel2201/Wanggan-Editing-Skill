@@ -12,6 +12,29 @@ description: 为已经剪掉气口和口癖的口播成片添加网感缩放、�
 - 原视频、words、SRT 和外部图片只读
 - 用户确认前只提供实时预览，不渲染最终 MP4
 
+## 技术框架（Agent 先读）
+
+先按下面的依赖链理解系统，再决定修改位置：
+
+```text
+Core 通用机制
+  -> Foundation Primitive + 原子 AssetType/EffectType
+  -> Base / 创作者 Profile 自定义类型、组合效果、创作与品牌规则
+  -> Composition 当前视频实例
+  -> Compiler IR（resolve -> apply -> finalize）
+  -> 实时预览 + 最终导出
+```
+
+- **Core**：负责注册、Schema/Constraint 校验、时间插值、编译和预览/导出管线；不决定哪里该加效果，也不认识任何博主风格。
+- **Foundation**：是无创作立场的正式 Profile 和原子标准库。Primitive 明确注册 transform、visual style、typography、layout、visibility 的 capability、channel 或 Asset prop；原子 AssetType/EffectType 引用这些 Primitive。
+- **Base**：是继承 Foundation 的正式示例 Profile，不是 Core 内置预设；它只保留 selection rules、`style_patches` 和由原子 Effect 组成的示例复合效果。
+- **创作者 Profile**：可以继承 Foundation 或 Base，新增自己的 AssetType、EffectType、复合 Effect、Constraint 和 selection rules。已有 Primitive 足够时只声明 JSON；缺少底层 Primitive、Operator 或 Renderer 时才使用可信 `runtime_modules`。
+- **类型与实例**：Profile 声明 AssetType/EffectType；某条视频实际出现的 Asset/Effect 实例只写入 `composition.json`。不要把当前视频内容写回 Profile。
+- **复杂效果**：EffectType 用 `composes` 引用多个原子 EffectType。Composition 保留一个复合 Effect 实例，Compiler 通用展开并写入各原子 channel；例如 Base 的 `item-enter` 由垂直位移入场与透明度入场组成。
+- **Compiler IR**：把 Profile 契约与 Composition 实例解析成统一结果。预览和最终导出必须消费同一份 IR，不能各自实现一套效果语义。
+
+按变化性质选择落点：创作判断改 selection rules；品牌与默认参数改 `style_patches` 或 Effect config；新的语义对象声明 AssetType；已有原子的复杂动画声明复合 EffectType；真正缺少原子 channel/绘制能力时才写可信 `runtime_modules`。完整格式见 [Primitive](references/primitive-format.md) 与 [Profile 编写](references/profile-authoring.md)。
+
 ## 前置条件（缺一不可）
 
 本 Skill 只做网感特效，不做口播粗剪。进入 Composition/具体视频编辑工作流前，先检查**当前工作目录**是否同时具备下面三样。缺任何一样就停下来：不要跑 `init`，不要补字幕，不要伪造时间戳。纯 Profile Authoring 可以在没有素材时进行，但不得伪称已经验证具体视频的预览或导出。
@@ -95,6 +118,8 @@ node scripts/wanggan.mjs profile sync --project "<任务目录>"
 - Keyword/List 的累积出现和 pop 是独立 Effect，不是 Asset 内置行为
 - List 的背景、边框、圆角和 padding 属于容器样式；上移、透明度、duration、delay 和 easing 属于 `base.item-enter` Effect config
 - capability、channel 和 timing model 是强契约；声明兼容的组合必须能真实进入 Compiler IR、预览和导出
+- AssetType/EffectType 必须声明 `uses_primitives`；Renderer 只声明实际消费的 `supportedChannels` 与 `supportedAssetProps`，不能硬编码 Primitive ID
+- 复杂 Effect 优先用 `composes` 组合原子 Effect；不要为已有原子组合新增写死逻辑的 Core Operator
 - 预览和最终 MP4 消费同一个 Compiler IR
 - 时间单位是秒；词语范围必须落在 words 边界上
 - 人工修改保留原 `created_by`，同时写 `human_modified: true`
@@ -106,4 +131,5 @@ node scripts/wanggan.mjs profile sync --project "<任务目录>"
 - [选择规则](profiles/base/selection-rules.md)
 - [Composition](references/composition-format.md)
 - [Profile 编写](references/profile-authoring.md)
+- [Primitive](references/primitive-format.md)
 - [Profile / AssetType / EffectType / Constraint](references/profile-format.md)

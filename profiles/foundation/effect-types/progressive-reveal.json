@@ -4,6 +4,7 @@
   "id": "base.progressive-reveal",
   "operator": "core.visibility.item-sequence",
   "requires_capabilities": ["ordered-items"],
+  "uses_primitives": ["base.visibility.item-sequence"],
   "timing_models": ["asset_items"],
   "writes_channels": ["visibility.items"],
   "overlap_policy": "exclusive-per-channel",

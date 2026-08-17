@@ -2,11 +2,35 @@
   "schema_version": 1,
   "kind": "effect_type",
   "id": "base.item-enter",
-  "operator": "core.transition.translate-opacity",
   "requires_capabilities": ["transform.translate-y", "style.opacity"],
+  "uses_primitives": ["base.transform.translate-y", "base.visual.opacity"],
   "timing_models": ["item_enter", "asset_enter"],
   "writes_channels": ["transform.translate-y.entry", "style.opacity.entry"],
   "overlap_policy": "exclusive-per-channel",
+  "composes": [
+    {
+      "id": "translate-y",
+      "effect_type": "base.translate-y-entry",
+      "config_from": {
+        "from_translate_y_ratio": "from_translate_y_ratio",
+        "to_translate_y_ratio": "to_translate_y_ratio",
+        "duration": "duration",
+        "delay": "delay",
+        "easing": "easing"
+      }
+    },
+    {
+      "id": "opacity",
+      "effect_type": "base.opacity-entry",
+      "config_from": {
+        "from_opacity": "from_opacity",
+        "to_opacity": "to_opacity",
+        "duration": "duration",
+        "delay": "delay",
+        "easing": "easing"
+      }
+    }
+  ],
   "config_schema": {
     "type": "object",
     "additionalProperties": false,
@@ -25,12 +49,12 @@
     }
   },
   "ui": {
-    "label": "位移淡入",
-    "toggle_label": "条目入场",
+    "label": "上移淡入",
+    "toggle_label": "入场动画",
     "presets": [
       {
         "id": "up-fade",
-        "label": "向上淡入",
+        "label": "上移淡入",
         "config": {
           "from_translate_y_ratio": 0.035,
           "to_translate_y_ratio": 0,

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "primitives": [
+    {
+      "id": "base.layout.box",
+      "category": "layout",
+      "capability": "layout.box",
+      "asset_props": ["box"],
+      "description": "归一化画面矩形"
+    },
+    {
+      "id": "base.layout.items",
+      "category": "layout",
+      "capability": "layout.items",
+      "asset_props": ["layout", "items"],
+      "description": "每个文字条目独立布局"
+    },
+    {
+      "id": "base.layout.flow",
+      "category": "layout",
+      "capability": "layout.flow",
+      "asset_props": ["box", "items"],
+      "description": "容器内纵向文字流布局"
+    },
+    {
+      "id": "base.layout.gap",
+      "category": "layout",
+      "capability": "layout.flow",
+      "asset_props": ["style.item_gap_ratio"],
+      "description": "文字条目间距"
+    },
+    {
+      "id": "base.layout.padding",
+      "category": "layout",
+      "capability": "container.style",
+      "asset_props": ["container.padding_ratio"],
+      "description": "容器内边距"
+    }
+  ]
+}

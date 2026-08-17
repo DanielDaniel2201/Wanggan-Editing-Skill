@@ -28,6 +28,7 @@ const PROFILE_MANIFEST_SCHEMA = {
     extends: { type: "array", items: { type: "string" } },
     selection_rules: { type: "array", items: { type: "string" } },
     selection_rules_mode: { enum: ["append", "replace"] },
+    primitives: { type: "array", items: { type: "string" } },
     asset_types: { type: "array", items: { type: "string" } },
     effect_types: { type: "array", items: { type: "string" } },
     constraints: { type: "array", items: { type: "string" } },
@@ -39,7 +40,7 @@ const PROFILE_MANIFEST_SCHEMA = {
 const ASSET_TYPE_SCHEMA = {
   type: "object",
   additionalProperties: true,
-  required: ["schema_version", "kind", "id", "renderer", "capabilities"],
+  required: ["schema_version", "kind", "id", "renderer", "capabilities", "uses_primitives"],
   properties: {
     schema_version: { const: 1 },
     kind: { const: "asset_type" },
@@ -47,6 +48,7 @@ const ASSET_TYPE_SCHEMA = {
     renderer: { type: "string", minLength: 1 },
     source_kinds: { type: "array", items: { type: "string" } },
     capabilities: { type: "array", items: { type: "string" } },
+    uses_primitives: { type: "array", items: { type: "string" } },
     default_layer: { type: "integer" },
     system_instance: { type: "object" },
     defaults: { type: "object" },
@@ -59,19 +61,72 @@ const ASSET_TYPE_SCHEMA = {
 const EFFECT_TYPE_SCHEMA = {
   type: "object",
   additionalProperties: true,
-  required: ["schema_version", "kind", "id", "operator", "requires_capabilities", "writes_channels"],
+  required: ["schema_version", "kind", "id", "requires_capabilities", "writes_channels", "uses_primitives"],
+  oneOf: [
+    { required: ["operator"], not: { required: ["composes"] } },
+    { required: ["composes"], not: { required: ["operator"] } },
+  ],
   properties: {
     schema_version: { const: 1 },
     kind: { const: "effect_type" },
     id: { type: "string", minLength: 1 },
     operator: { type: "string", minLength: 1 },
     requires_capabilities: { type: "array", items: { type: "string" } },
+    uses_primitives: { type: "array", items: { type: "string" } },
     timing_models: { type: "array", items: { type: "string" } },
     writes_channels: { type: "array", items: { type: "string" } },
     overlap_policy: { type: "string" },
     config_schema: { type: "object" },
     ui: { type: "object" },
+    composes: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "effect_type"],
+        properties: {
+          id: { type: "string", minLength: 1 },
+          effect_type: { type: "string", minLength: 1 },
+          config: { type: "object" },
+          config_from: {
+            type: "object",
+            additionalProperties: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
     override: { type: "boolean" },
+  },
+};
+
+const PRIMITIVES_FILE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["schema_version", "primitives"],
+  properties: {
+    schema_version: { const: 1 },
+    primitives: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "category", "capability"],
+        anyOf: [{ required: ["channels"] }, { required: ["asset_props"] }],
+        properties: {
+          id: { type: "string", minLength: 1 },
+          category: {
+            enum: ["transform", "visual-style", "typography", "layout", "timing", "visibility", "content"],
+          },
+          capability: { type: "string", minLength: 1 },
+          channels: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+          asset_props: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+          description: { type: "string" },
+          override: { type: "boolean" },
+        },
+      },
+    },
   },
 };
 
@@ -112,7 +167,7 @@ const PATCHES_FILE_SCHEMA = {
         additionalProperties: false,
         required: ["kind", "id", "changes"],
         properties: {
-          kind: { enum: ["asset_type", "effect_type", "constraint"] },
+          kind: { enum: ["primitive", "asset_type", "effect_type", "constraint"] },
           id: { type: "string", minLength: 1 },
           changes: { type: "object" },
         },
@@ -122,6 +177,7 @@ const PATCHES_FILE_SCHEMA = {
 };
 
 const validateManifest = compileSchema(PROFILE_MANIFEST_SCHEMA, "profile.json");
+const validatePrimitivesFile = compileSchema(PRIMITIVES_FILE_SCHEMA, "primitives.json");
 const validateAssetType = compileSchema(ASSET_TYPE_SCHEMA, "asset_type");
 const validateEffectType = compileSchema(EFFECT_TYPE_SCHEMA, "effect_type");
 const validateConstraintsFile = compileSchema(CONSTRAINTS_FILE_SCHEMA, "constraints.json");
@@ -274,6 +330,15 @@ function loadOneProfile(profileDir, stack) {
     digest: fileDigest(manifestPath),
   }];
 
+  const primitives = [];
+  for (const relativePath of manifest.primitives || []) {
+    const file = readDefinition(profileDir, relativePath, "Primitive");
+    files.push(file);
+    const document = assertValid(validatePrimitivesFile, file.value, file.relativePath);
+    primitives.push(...document.primitives.map((primitive) => (
+      assertOwnedId(primitive, manifest.definition_namespace || manifest.id, "Primitive")
+    )));
+  }
   const assetTypes = [];
   for (const relativePath of manifest.asset_types || []) {
     const file = readDefinition(profileDir, relativePath, "AssetType");
@@ -345,6 +410,7 @@ function loadOneProfile(profileDir, stack) {
     dir: profileDir,
     manifest,
     files,
+    primitives,
     assetTypes,
     effectTypes,
     constraints,
@@ -378,6 +444,7 @@ export async function loadProfile(profileInput, options = {}) {
     throw new WangganError("Profile 继承链包含重复 id", { ids });
   }
 
+  let primitives = [];
   let assetTypes = [];
   let effectTypes = [];
   let constraints = [];
@@ -385,9 +452,17 @@ export async function loadProfile(profileInput, options = {}) {
   const files = [];
   const runtimeModuleRefs = [];
   for (const item of chain) {
+    primitives = mergeById("primitive", primitives, item.primitives, "Primitive");
     assetTypes = mergeById("asset_type", assetTypes, item.assetTypes, "AssetType");
     effectTypes = mergeById("effect_type", effectTypes, item.effectTypes, "EffectType");
     constraints = mergeById("constraint", constraints, item.constraints, "Constraint");
+    primitives = applyPatches(
+      "primitive",
+      primitives,
+      item.patches,
+      "Primitive",
+      (value) => validatePrimitivesFile({ schema_version: 1, primitives: [value] }),
+    );
     assetTypes = applyPatches("asset_type", assetTypes, item.patches, "AssetType", validateAssetType);
     effectTypes = applyPatches("effect_type", effectTypes, item.patches, "EffectType", validateEffectType);
     constraints = applyPatches(
@@ -406,6 +481,7 @@ export async function loadProfile(profileInput, options = {}) {
   }
 
   const leaf = chain.at(-1);
+  for (const primitive of primitives) assertNamespaced(primitive.id, leaf.manifest.id, "Primitive");
   for (const assetType of assetTypes) assertNamespaced(assetType.id, leaf.manifest.id, "AssetType");
   for (const effectType of effectTypes) assertNamespaced(effectType.id, leaf.manifest.id, "EffectType");
 
@@ -427,6 +503,32 @@ export async function loadProfile(profileInput, options = {}) {
     }
   }
 
+  const primitiveById = new Map(primitives.map((item) => [item.id, item]));
+  const requirePrimitives = (owner, label) => (owner.uses_primitives || []).map((id) => {
+    const primitive = primitiveById.get(id);
+    if (!primitive) throw new WangganError(`${label} 引用了未注册的 Primitive`, { id: owner.id, primitive: id });
+    if (!(owner.capabilities || owner.requires_capabilities || []).includes(primitive.capability)) {
+      throw new WangganError(`${label} 使用 Primitive 但未声明对应 capability`, {
+        id: owner.id,
+        primitive: id,
+        capability: primitive.capability,
+      });
+    }
+    return primitive;
+  });
+  const schemaSupportsPath = (schema, dottedPath) => {
+    let current = schema;
+    for (const key of String(dottedPath).split(".")) {
+      if (current?.properties?.[key]) {
+        current = current.properties[key];
+        continue;
+      }
+      if (current?.additionalProperties === true || typeof current?.additionalProperties === "object") return true;
+      return false;
+    }
+    return true;
+  };
+
   for (const assetType of assetTypes) {
     if (options.loadRuntime !== false && !registry.hasRenderer(assetType.renderer)) {
       throw new WangganError("AssetType 引用了未注册的 renderer", {
@@ -434,16 +536,54 @@ export async function loadProfile(profileInput, options = {}) {
         renderer: assetType.renderer,
       });
     }
+    const usedPrimitives = requirePrimitives(assetType, "AssetType");
+    const unsupportedProps = usedPrimitives.flatMap((primitive) => (
+      (primitive.asset_props || [])
+        .filter((propPath) => !schemaSupportsPath(assetType.instance_schema || {}, propPath))
+        .map((propPath) => ({ primitive: primitive.id, propPath }))
+    ));
+    if (unsupportedProps.length) {
+      throw new WangganError("AssetType 使用 Primitive 但 instance_schema 未声明对应属性", {
+        assetType: assetType.id,
+        unsupportedProps,
+      });
+    }
+    if (options.loadRuntime !== false) {
+      const renderer = registry.getRenderer(assetType.renderer);
+      const unsupportedPrimitiveChannels = [...new Set(usedPrimitives.flatMap((item) => item.channels || []))]
+        .filter((channel) => !(renderer.supportedChannels || []).includes(channel));
+      const unsupportedPrimitiveProps = [...new Set(usedPrimitives.flatMap((item) => item.asset_props || []))]
+        .filter((propPath) => !(renderer.supportedAssetProps || []).includes(propPath));
+      if (unsupportedPrimitiveChannels.length || unsupportedPrimitiveProps.length) {
+        throw new WangganError("Asset renderer 无法消费 Primitive contract", {
+          assetType: assetType.id,
+          renderer: assetType.renderer,
+          unsupportedPrimitiveChannels,
+          unsupportedPrimitiveProps,
+        });
+      }
+    }
     assetType.instanceValidator = compileSchema(assetType.instance_schema || { type: "object" }, assetType.id);
   }
   for (const effectType of effectTypes) {
-    if (options.loadRuntime !== false && !registry.hasOperator(effectType.operator)) {
+    const usedPrimitives = requirePrimitives(effectType, "EffectType");
+    const primitiveChannels = new Set(usedPrimitives.flatMap((item) => item.channels || []));
+    const undeclaredPrimitiveChannels = (effectType.writes_channels || []).filter((channel) => (
+      !primitiveChannels.has(channel)
+    ));
+    if (undeclaredPrimitiveChannels.length) {
+      throw new WangganError("EffectType 写入了未由 Primitive 声明的 channel", {
+        effectType: effectType.id,
+        undeclaredPrimitiveChannels,
+      });
+    }
+    if (!effectType.composes && options.loadRuntime !== false && !registry.hasOperator(effectType.operator)) {
       throw new WangganError("EffectType 引用了未注册的 operator", {
         effectType: effectType.id,
         operator: effectType.operator,
       });
     }
-    if (options.loadRuntime !== false) {
+    if (!effectType.composes && options.loadRuntime !== false) {
       const operator = registry.getOperator(effectType.operator);
       const unsupportedWrites = (effectType.writes_channels || []).filter((channel) => (
         !(operator.writesChannels || []).includes(channel)
@@ -490,6 +630,61 @@ export async function loadProfile(profileInput, options = {}) {
     }
     effectType.configValidator = compileSchema(effectType.config_schema || { type: "object" }, effectType.id);
   }
+
+  const effectById = new Map(effectTypes.map((item) => [item.id, item]));
+  const visitComposite = (effectType, stack = []) => {
+    if (!effectType.composes) return;
+    if (stack.includes(effectType.id)) {
+      throw new WangganError("EffectType composes 存在循环引用", { cycle: [...stack, effectType.id] });
+    }
+    const stepIds = new Set();
+    for (const step of effectType.composes) {
+      if (stepIds.has(step.id)) throw new WangganError("EffectType composes step id 重复", { effectType: effectType.id, step: step.id });
+      stepIds.add(step.id);
+      const child = effectById.get(step.effect_type);
+      if (!child) throw new WangganError("EffectType composes 引用了未注册 EffectType", { effectType: effectType.id, child: step.effect_type });
+      const missingCapabilities = (child.requires_capabilities || []).filter((item) => !(effectType.requires_capabilities || []).includes(item));
+      const missingChannels = (child.writes_channels || []).filter((item) => !(effectType.writes_channels || []).includes(item));
+      const unsupportedTiming = (effectType.timing_models || []).filter((item) => !(child.timing_models || []).includes(item));
+      if (missingCapabilities.length || missingChannels.length || unsupportedTiming.length) {
+        throw new WangganError("复合 EffectType 未覆盖子 EffectType 契约", {
+          effectType: effectType.id,
+          child: child.id,
+          missingCapabilities,
+          missingChannels,
+          unsupportedTiming,
+        });
+      }
+      visitComposite(child, [...stack, effectType.id]);
+    }
+  };
+  for (const effectType of effectTypes) visitComposite(effectType);
+  if (options.loadRuntime !== false) {
+    for (const effectType of effectTypes.filter((item) => item.composes)) {
+      const compatibleAssets = assetTypes.filter((assetType) => (
+        (effectType.requires_capabilities || []).every((capability) => (
+          (assetType.capabilities || []).includes(capability)
+        ))
+      ));
+      if (!compatibleAssets.length) {
+        throw new WangganError("复合 EffectType 没有任何兼容 AssetType", { effectType: effectType.id });
+      }
+      for (const assetType of compatibleAssets) {
+        const renderer = registry.getRenderer(assetType.renderer);
+        const unsupportedChannels = (effectType.writes_channels || []).filter((channel) => (
+          !(renderer.supportedChannels || []).includes(channel)
+        ));
+        if (unsupportedChannels.length) {
+          throw new WangganError("Asset renderer 无法消费复合 EffectType channel", {
+            effectType: effectType.id,
+            assetType: assetType.id,
+            renderer: assetType.renderer,
+            unsupportedChannels,
+          });
+        }
+      }
+    }
+  }
   for (const constraint of constraints) {
     if (constraint.enabled === false) continue;
     if (options.loadRuntime !== false && !registry.hasConstraintKind(constraint.kind)) {
@@ -528,6 +723,7 @@ export async function loadProfile(profileInput, options = {}) {
     extends: chain.slice(0, -1).map((item) => item.manifest.id),
     digest,
     files: allFiles,
+    primitiveTypes: primitiveById,
     assetTypes: new Map(assetTypes.map((item) => [item.id, item])),
     effectTypes: new Map(effectTypes.map((item) => [item.id, item])),
     constraints: constraints.filter((item) => item.enabled !== false),
@@ -563,9 +759,18 @@ export function profileCatalog(profile) {
     digest: profile.digest,
     extends: profile.extends,
     selection_rules: profile.selectionRules.map((item) => ({ path: item.path })),
+    primitiveTypes: [...profile.primitiveTypes.values()].map((item) => ({
+      id: item.id,
+      category: item.category,
+      capability: item.capability,
+      channels: item.channels || [],
+      asset_props: item.asset_props || [],
+      description: item.description || "",
+    })),
     assetTypes: [...profile.assetTypes.values()].map((item) => ({
       id: item.id,
       capabilities: item.capabilities || [],
+      uses_primitives: item.uses_primitives || [],
       default_layer: item.default_layer ?? 0,
       source_kinds: item.source_kinds || [],
       system_instance: item.system_instance ? { id: item.system_instance.id, type: item.id } : null,
@@ -577,10 +782,12 @@ export function profileCatalog(profile) {
     effectTypes: [...profile.effectTypes.values()].map((item) => ({
       id: item.id,
       requires_capabilities: item.requires_capabilities || [],
+      uses_primitives: item.uses_primitives || [],
       timing_models: item.timing_models || [],
       writes_channels: item.writes_channels || [],
       overlap_policy: item.overlap_policy || "exclusive-per-channel",
       config_schema: item.config_schema || { type: "object" },
+      composes: deepClone(item.composes || []),
       ui: item.ui || { label: item.id },
     })),
     constraints: profile.constraints.map((item) => ({
@@ -592,6 +799,58 @@ export function profileCatalog(profile) {
       .filter((item) => item.system_instance?.id)
       .map((item) => ({ id: item.system_instance.id, type: item.id })),
   };
+}
+
+function readConfigPath(value, dottedPath) {
+  return String(dottedPath).split(".").reduce((current, key) => current?.[key], value);
+}
+
+function writeConfigPath(target, dottedPath, value) {
+  const parts = String(dottedPath).split(".");
+  let current = target;
+  for (const key of parts.slice(0, -1)) {
+    if (["__proto__", "prototype", "constructor"].includes(key)) {
+      throw new WangganError("composes config_from 包含不安全字段", { path: dottedPath });
+    }
+    if (!current[key] || typeof current[key] !== "object" || Array.isArray(current[key])) current[key] = {};
+    current = current[key];
+  }
+  const finalKey = parts.at(-1);
+  if (["__proto__", "prototype", "constructor"].includes(finalKey)) {
+    throw new WangganError("composes config_from 包含不安全字段", { path: dottedPath });
+  }
+  current[finalKey] = deepClone(value);
+}
+
+export function expandEffectInstance(effect, profile, stack = []) {
+  const typeDef = profile.effectTypes.get(effect.type);
+  if (!typeDef) throw new WangganError("未注册的 EffectType", { type: effect.type });
+  if (!typeDef.composes) return [effect];
+  if (stack.includes(typeDef.id)) {
+    throw new WangganError("EffectType composes 实例展开出现循环", { cycle: [...stack, typeDef.id] });
+  }
+  return typeDef.composes.flatMap((step) => {
+    const childType = profile.effectTypes.get(step.effect_type);
+    const childConfig = deepClone(step.config || {});
+    for (const [childPath, parentPath] of Object.entries(step.config_from || {})) {
+      const value = readConfigPath(effect.config || {}, parentPath);
+      if (value !== undefined) writeConfigPath(childConfig, childPath, value);
+    }
+    if (!childType.configValidator(childConfig)) {
+      throw new WangganError("复合 EffectType 子配置不符合 Schema", {
+        effectType: typeDef.id,
+        step: step.id,
+        child: childType.id,
+        errors: childType.configValidator.errors,
+      });
+    }
+    return expandEffectInstance({
+      ...effect,
+      id: `${effect.id}.${step.id}`,
+      type: childType.id,
+      config: childConfig,
+    }, profile, [...stack, typeDef.id]);
+  });
 }
 
 export function compareProfileLock(profile, lock) {

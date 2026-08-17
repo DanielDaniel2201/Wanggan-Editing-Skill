@@ -5,6 +5,7 @@ import { normalizeBox } from "../ass.mjs";
 
 export const imageRenderer = {
   id: "core.image",
+  supportedAssetProps: ["box"],
   supportedChannels: [
     "transform.scale",
     "style.opacity",

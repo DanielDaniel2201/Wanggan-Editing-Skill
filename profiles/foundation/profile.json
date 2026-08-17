@@ -1,10 +1,17 @@
 {
   "schema_version": 1,
   "id": "foundation",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "definition_namespace": "base",
   "extends": [],
   "selection_rules": [],
+  "primitives": [
+    "primitives/transform.json",
+    "primitives/visual-style.json",
+    "primitives/typography.json",
+    "primitives/layout.json",
+    "primitives/visibility.json"
+  ],
   "asset_types": [
     "asset-types/video.json",
     "asset-types/captions.json",
@@ -16,9 +23,10 @@
     "effect-types/scale.json",
     "effect-types/text-style.json",
     "effect-types/opacity.json",
-    "effect-types/progressive-reveal.json",
-    "effect-types/pop.json",
-    "effect-types/item-enter.json"
+    "effect-types/scale-entry.json",
+    "effect-types/translate-y-entry.json",
+    "effect-types/opacity-entry.json",
+    "effect-types/progressive-reveal.json"
   ],
   "constraints": ["constraints.json"],
   "patches": [],

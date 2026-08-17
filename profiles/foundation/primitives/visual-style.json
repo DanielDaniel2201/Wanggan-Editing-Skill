@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "primitives": [
+    {
+      "id": "base.visual.opacity",
+      "category": "visual-style",
+      "capability": "style.opacity",
+      "channels": ["style.opacity", "style.opacity.entry"],
+      "description": "静态区间或入场透明度"
+    },
+    {
+      "id": "base.container.background-color",
+      "category": "visual-style",
+      "capability": "container.style",
+      "asset_props": ["container.background_color"],
+      "description": "容器背景颜色"
+    },
+    {
+      "id": "base.container.background-opacity",
+      "category": "visual-style",
+      "capability": "container.style",
+      "asset_props": ["container.background_opacity"],
+      "description": "容器背景透明度"
+    },
+    {
+      "id": "base.container.border-color",
+      "category": "visual-style",
+      "capability": "container.style",
+      "asset_props": ["container.border_color"],
+      "description": "容器边框颜色"
+    },
+    {
+      "id": "base.container.border-opacity",
+      "category": "visual-style",
+      "capability": "container.style",
+      "asset_props": ["container.border_opacity"],
+      "description": "容器边框透明度"
+    },
+    {
+      "id": "base.container.border-width",
+      "category": "visual-style",
+      "capability": "container.style",
+      "asset_props": ["container.border_width_ratio"],
+      "description": "容器边框宽度"
+    },
+    {
+      "id": "base.container.border-radius",
+      "category": "visual-style",
+      "capability": "container.style",
+      "asset_props": ["container.border_radius_ratio"],
+      "description": "容器圆角半径"
+    }
+  ]
+}

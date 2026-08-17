@@ -99,11 +99,18 @@ try {
   const profileResponse = await fetch(`${url}api/profile`);
   assert.equal(profileResponse.status, 200);
   const catalog = await profileResponse.json();
+  assert.ok(catalog.primitiveTypes.some((item) => item.id === "base.transform.translate-y"));
+  assert.ok(catalog.primitiveTypes.some((item) => item.id === "base.container.background-color"));
   assert.ok(catalog.effectTypes.some((item) => item.id === "base.scale"));
   assert.ok(catalog.effectTypes.some((item) => item.id === "test-ip.fade"));
+  assert.deepEqual(
+    catalog.effectTypes.find((item) => item.id === "base.item-enter").composes.map((item) => item.effect_type),
+    ["base.translate-y-entry", "base.opacity-entry"],
+  );
   assert.ok(catalog.effectTypes.some((item) => item.ui?.presets?.some((preset) => preset.label === "瞬间放大")));
   assert.ok(catalog.effectTypes.some((item) => item.ui?.presets?.some((preset) => preset.label === "大字号、亮黄色")));
   assert.ok(catalog.assetTypes.some((item) => item.ui?.create_from_selection && item.capabilities.includes("ordered-items")));
+  assert.ok(catalog.assetTypes.some((item) => item.id === "test-ip.card"));
 
   const stateResponse = await fetch(`${url}api/state`);
   assert.equal(stateResponse.status, 200);

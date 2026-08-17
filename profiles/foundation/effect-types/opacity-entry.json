@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "kind": "effect_type",
+  "id": "base.opacity-entry",
+  "operator": "core.transition.opacity",
+  "requires_capabilities": ["style.opacity"],
+  "uses_primitives": ["base.visual.opacity"],
+  "timing_models": ["item_enter", "asset_enter"],
+  "writes_channels": ["style.opacity.entry"],
+  "overlap_policy": "exclusive-per-channel",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["from_opacity", "to_opacity", "duration", "easing"],
+    "properties": {
+      "from_opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+      "to_opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+      "duration": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 },
+      "delay": { "type": "number", "minimum": 0, "maximum": 2 },
+      "easing": { "enum": ["linear", "ease-in", "ease-out", "ease-in-out"] }
+    }
+  },
+  "ui": { "label": "透明度入场", "atomic": true }
+}
